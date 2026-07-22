@@ -7,6 +7,13 @@ let refreshInFlight = false;
 let topologyGraph = null;
 let topologyGraphReady = false;
 let topologyGraphContainer = null;
+let topologyNetworkCanvas = null;
+let topologyNetworkCtx = null;
+let topologyNetworkFrame = 0;
+let topologyNetworkLastSize = "";
+let topologyNetworkPoints = [];
+let topologyNetworkRipples = [];
+let topologyNetworkPointer = { x: -10000, y: -10000, active: false };
 let topologyParticlesLayer = null;
 let topologyResizeObserver = null;
 let topologyNodePositions = new Map();
@@ -17,6 +24,11 @@ let topologyLastParticleAt = 0;
 const $ = (id) => document.getElementById(id);
 const THEMES = new Set(["phala-terminal", "vast-console", "clean-ops", "signal-board", "mesh-topology"]);
 const TOPOLOGY_ZOOM_PADDING = 135;
+const TOPOLOGY_UPSTREAM_MIN_DISTANCE = 255;
+const TOPOLOGY_NETWORK_MIN_POINTS = 42;
+const TOPOLOGY_NETWORK_MAX_POINTS = 58;
+const TOPOLOGY_NETWORK_PATH_LINK_DISTANCE = 38;
+const TOPOLOGY_NETWORK_MOUSE_DISTANCE = 69;
 
 function preferredTheme() {
   const saved = localStorage.getItem("phala-router-admin-theme");
@@ -30,8 +42,13 @@ function applyTheme(theme) {
   localStorage.setItem("phala-router-admin-theme", next);
   if (next !== "mesh-topology") setEditorOpen(false);
   if (topologyGraph) {
-    if (next === "mesh-topology") topologyGraph.resumeAnimation();
-    else topologyGraph.pauseAnimation();
+    if (next === "mesh-topology") {
+      topologyGraph.resumeAnimation();
+      startTopologyNetworkAnimation();
+    } else {
+      topologyGraph.pauseAnimation();
+      stopTopologyNetworkAnimation();
+    }
   }
   window.setTimeout(() => {
     resizeTopologyGraph();
@@ -555,15 +572,19 @@ function topologyLinkDash(link) {
 function topologyCoreGapForce(minRadius) {
   let graphNodes = [];
   function force(alpha) {
-    graphNodes.forEach((node) => {
+    graphNodes.forEach((node, index) => {
       if (node.type !== "upstream") return;
       const x = Number.isFinite(node.x) ? node.x : 0;
       const y = Number.isFinite(node.y) ? node.y : 0;
-      const distance = Math.max(0.001, Math.hypot(x, y));
+      const rawDistance = Math.hypot(x, y);
+      const distance = Math.max(0.001, rawDistance);
       if (distance >= minRadius) return;
+      const fallbackAngle = -Math.PI / 5 + index * 0.73;
+      const dirX = rawDistance < 1 ? Math.cos(fallbackAngle) : x / distance;
+      const dirY = rawDistance < 1 ? Math.sin(fallbackAngle) : y / distance;
       const push = (minRadius - distance) * alpha * 1.2;
-      node.vx = (node.vx || 0) + (x / distance) * push;
-      node.vy = (node.vy || 0) + (y / distance) * push;
+      node.vx = (node.vx || 0) + dirX * push;
+      node.vy = (node.vy || 0) + dirY * push;
     });
   }
   force.initialize = (nodes) => {
@@ -583,12 +604,22 @@ function rememberTopologyPositions() {
 
 function initialTopologyPosition(index, total) {
   const count = Math.max(1, total);
-  const angle = -Math.PI / 2 + (index / count) * Math.PI * 2;
-  const radius = count <= 4 ? 260 : 305;
+  const angle = count === 1 ? -Math.PI / 5 : -Math.PI / 2 + (index / count) * Math.PI * 2;
+  const radius = count === 1 ? 310 : count <= 4 ? 260 : 305;
   return {
     x: Math.cos(angle) * radius,
     y: Math.sin(angle) * radius
   };
+}
+
+function usableSavedTopologyPosition(saved) {
+  if (!saved || !Number.isFinite(saved.x) || !Number.isFinite(saved.y)) return false;
+  return Math.hypot(saved.x, saved.y) >= TOPOLOGY_UPSTREAM_MIN_DISTANCE * 0.72;
+}
+
+function topologyPositionTooCloseToCore(node) {
+  if (!node || !Number.isFinite(node.x) || !Number.isFinite(node.y)) return true;
+  return Math.hypot(node.x, node.y) < TOPOLOGY_UPSTREAM_MIN_DISTANCE * 0.72;
 }
 
 function buildTopologyGraph(snapshot) {
@@ -608,7 +639,9 @@ function buildTopologyGraph(snapshot) {
   upstreams.forEach((node, index) => {
     const saved = topologyNodePositions.get(node.name);
     const initial = initialTopologyPosition(index, upstreams.length);
+    const useSaved = usableSavedTopologyPosition(saved);
     const pinned = topologyPinnedNodes.has(node.name);
+    const singleUpstream = upstreams.length === 1;
     const metrics = topologyNodeMetrics(node);
     const graphNode = {
       id: node.name,
@@ -617,10 +650,10 @@ function buildTopologyGraph(snapshot) {
       enabled: node.enabled,
       raw: node,
       metrics,
-      x: saved?.x ?? initial.x,
-      y: saved?.y ?? initial.y,
-      fx: pinned ? saved?.fx ?? saved?.x : undefined,
-      fy: pinned ? saved?.fy ?? saved?.y : undefined
+      x: useSaved ? saved.x : initial.x,
+      y: useSaved ? saved.y : initial.y,
+      fx: pinned && useSaved ? saved.fx ?? saved.x : singleUpstream ? initial.x : undefined,
+      fy: pinned && useSaved ? saved.fy ?? saved.y : singleUpstream ? initial.y : undefined
     };
     graphNodes.push(graphNode);
     graphLinks.push({
@@ -678,8 +711,21 @@ function updateExistingTopologyGraph(nextData) {
     currentNode.enabled = nextNode.enabled;
     currentNode.raw = nextNode.raw;
     currentNode.metrics = nextNode.metrics;
+    if (topologyPositionTooCloseToCore(currentNode)) {
+      currentNode.x = nextNode.x;
+      currentNode.y = nextNode.y;
+      currentNode.vx = 0;
+      currentNode.vy = 0;
+    }
     if (!Number.isFinite(currentNode.x)) currentNode.x = nextNode.x;
     if (!Number.isFinite(currentNode.y)) currentNode.y = nextNode.y;
+    if (Number.isFinite(nextNode.fx) && Number.isFinite(nextNode.fy)) {
+      currentNode.fx = nextNode.fx;
+      currentNode.fy = nextNode.fy;
+    } else if (!topologyPinnedNodes.has(currentNode.id)) {
+      currentNode.fx = undefined;
+      currentNode.fy = undefined;
+    }
   }
 
   const linkByKey = new Map((current.links || []).map((link) => [topologyLinkKey(link), link]));
@@ -702,6 +748,314 @@ function requestTopologyRedraw(graph) {
   });
 }
 
+function topologyNetworkPointCount(width, height) {
+  const raw = Math.round((width * height) / 28000);
+  return Math.max(TOPOLOGY_NETWORK_MIN_POINTS, Math.min(TOPOLOGY_NETWORK_MAX_POINTS, raw));
+}
+
+function topologyNetworkAnchor(width, height) {
+  const fallback = { x: width / 2, y: height / 2 };
+  const raw = topologyNetworkPointer.active ? topologyNetworkPointer : fallback;
+  return {
+    x: Math.max(96, Math.min(width - 96, raw.x)),
+    y: Math.max(96, Math.min(height - 96, raw.y)),
+    active: topologyNetworkPointer.active
+  };
+}
+
+function topologyPShapeTargets(width, height, count) {
+  const anchor = topologyNetworkAnchor(width, height);
+  const pHeight = Math.min(height * 0.135, width * 0.075, 113);
+  const stemX = anchor.x - pHeight * 0.26;
+  const topY = anchor.y - pHeight * 0.47;
+  const bottomY = anchor.y + pHeight * 0.47;
+  const midY = topY + pHeight * 0.43;
+  const rightX = stemX + pHeight * 0.34;
+  const curveBulge = pHeight * 0.18;
+  const stemCount = Math.max(20, Math.round(count * 0.34));
+  const topCount = Math.max(10, Math.round(count * 0.17));
+  const curveCount = Math.max(16, Math.round(count * 0.28));
+  const midCount = Math.max(10, count - stemCount - topCount - curveCount);
+  const targets = [];
+
+  for (let i = 0; i < stemCount; i += 1) {
+    const t = i / Math.max(1, stemCount - 1);
+    targets.push({
+      x: stemX,
+      y: topY + (bottomY - topY) * t,
+      section: "stem",
+      order: i,
+      anchorActive: anchor.active,
+      stemCount,
+      topCount,
+      curveCount,
+      midCount
+    });
+  }
+
+  for (let i = 0; i < topCount; i += 1) {
+    const t = i / Math.max(1, topCount - 1);
+    targets.push({
+      x: stemX + (rightX - stemX) * t,
+      y: topY,
+      section: "top",
+      order: i,
+      anchorActive: anchor.active,
+      stemCount,
+      topCount,
+      curveCount,
+      midCount
+    });
+  }
+
+  for (let i = 0; i < curveCount; i += 1) {
+    const t = i / Math.max(1, curveCount - 1);
+    targets.push({
+      x: rightX + Math.sin(t * Math.PI) * curveBulge,
+      y: topY + (midY - topY) * t,
+      section: "curve",
+      order: i,
+      anchorActive: anchor.active,
+      stemCount,
+      topCount,
+      curveCount,
+      midCount
+    });
+  }
+
+  for (let i = 0; i < midCount; i += 1) {
+    const t = i / Math.max(1, midCount - 1);
+    targets.push({
+      x: rightX + (stemX - rightX) * t,
+      y: midY,
+      section: "mid",
+      order: i,
+      anchorActive: anchor.active,
+      stemCount,
+      topCount,
+      curveCount,
+      midCount
+    });
+  }
+
+  return targets;
+}
+
+function resetTopologyNetworkPoints(width, height) {
+  const count = topologyNetworkPointCount(width, height);
+  const targets = topologyPShapeTargets(width, height, count);
+  const now = performance.now();
+  topologyNetworkPoints = targets.map((target, index) => {
+    return {
+      x: width * (0.12 + Math.random() * 0.76),
+      y: height * (0.16 + Math.random() * 0.68),
+      targetX: target.x,
+      targetY: target.y,
+      section: target.section,
+      order: target.order,
+      anchorActive: target.anchorActive,
+      stemCount: target.stemCount,
+      topCount: target.topCount,
+      curveCount: target.curveCount,
+      midCount: target.midCount,
+      vx: (Math.random() - 0.5) * 0.42,
+      vy: (Math.random() - 0.5) * 0.42,
+      size: 1.0 + Math.random() * 1.4,
+      phase: Math.random() * Math.PI * 2,
+      startedAt: now + index * 26
+    };
+  });
+}
+
+function retargetTopologyNetworkPoints(width, height) {
+  const targets = topologyPShapeTargets(width, height, topologyNetworkPoints.length);
+  topologyNetworkPoints.forEach((point, index) => {
+    const target = targets[index];
+    point.targetX = target.x;
+    point.targetY = target.y;
+    point.section = target.section;
+    point.order = target.order;
+    point.anchorActive = target.anchorActive;
+    point.stemCount = target.stemCount;
+    point.topCount = target.topCount;
+    point.curveCount = target.curveCount;
+    point.midCount = target.midCount;
+  });
+}
+
+function syncTopologyNetworkCanvas() {
+  if (!topologyNetworkCanvas) return null;
+  const host = $("topology");
+  const width = Math.max(320, Math.round(host.clientWidth || 0));
+  const height = Math.max(420, Math.round(host.clientHeight || 0));
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const pixelWidth = Math.round(width * dpr);
+  const pixelHeight = Math.round(height * dpr);
+  if (topologyNetworkCanvas.width !== pixelWidth || topologyNetworkCanvas.height !== pixelHeight) {
+    topologyNetworkCanvas.width = pixelWidth;
+    topologyNetworkCanvas.height = pixelHeight;
+    topologyNetworkCanvas.style.width = `${width}px`;
+    topologyNetworkCanvas.style.height = `${height}px`;
+    topologyNetworkCtx = topologyNetworkCanvas.getContext("2d");
+    topologyNetworkCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  const nextSize = `${width}x${height}`;
+  if (topologyNetworkLastSize !== nextSize || topologyNetworkPoints.length === 0) {
+    const onlyResize = topologyNetworkLastSize && topologyNetworkPoints.length > 0;
+    topologyNetworkLastSize = nextSize;
+    if (onlyResize) retargetTopologyNetworkPoints(width, height);
+    else resetTopologyNetworkPoints(width, height);
+  }
+  return { width, height };
+}
+
+function updateTopologyNetworkPoint(point, width, height) {
+  const now = performance.now();
+  const age = Math.max(0, now - (point.startedAt || now));
+  const settle = Math.min(1, age / 5200);
+  const breathe = Math.sin(now / 1200 + point.phase) * 1.15;
+  const targetX = point.targetX + breathe * 0.45;
+  const targetY = point.targetY + breathe;
+  const dxTarget = targetX - point.x;
+  const dyTarget = targetY - point.y;
+  const spring = 0.0038 + settle * 0.017;
+  point.vx += dxTarget * spring;
+  point.vy += dyTarget * spring;
+
+  if (topologyNetworkPointer.active) {
+    const dx = topologyNetworkPointer.x - point.x;
+    const dy = topologyNetworkPointer.y - point.y;
+    const distance = Math.max(1, Math.hypot(dx, dy));
+    if (distance < TOPOLOGY_NETWORK_MOUSE_DISTANCE) {
+      const wake = (1 - distance / TOPOLOGY_NETWORK_MOUSE_DISTANCE) * 0.008;
+      point.vx += (-dy / distance) * wake;
+      point.vy += (dx / distance) * wake;
+    }
+  }
+  point.x += point.vx;
+  point.y += point.vy;
+  point.vx *= 0.86;
+  point.vy *= 0.86;
+  if (point.x < 18 || point.x > width - 18) {
+    point.vx *= -1;
+    point.x = Math.max(18, Math.min(width - 18, point.x));
+  }
+  if (point.y < 18 || point.y > height - 18) {
+    point.vy *= -1;
+    point.y = Math.max(18, Math.min(height - 18, point.y));
+  }
+}
+
+function drawTopologyNetworkLine(ctx, a, b, maxDistance, baseAlpha, color) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  const distance = Math.hypot(dx, dy);
+  if (distance > maxDistance) return;
+  const alpha = (1 - distance / maxDistance) * baseAlpha;
+  ctx.strokeStyle = colorWithAlpha(color, alpha);
+  ctx.lineWidth = Math.max(0.45, alpha * 7);
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.stroke();
+}
+
+function drawTopologyPShapePath(ctx, points, primary, blue) {
+  if (points.length < 4) return;
+  const bySection = points.reduce((out, point) => {
+    if (!out[point.section]) out[point.section] = [];
+    out[point.section].push(point);
+    return out;
+  }, {});
+  ["stem", "top", "curve", "mid"].forEach((section) => {
+    const sectionPoints = bySection[section] || [];
+    for (let i = 0; i < sectionPoints.length - 1; i += 1) {
+      const color = section === "curve" ? blue : primary;
+      const alpha = section === "curve" ? 0.22 : 0.24;
+      drawTopologyNetworkLine(ctx, sectionPoints[i], sectionPoints[i + 1], TOPOLOGY_NETWORK_PATH_LINK_DISTANCE, alpha, color);
+    }
+  });
+
+  const stem = bySection.stem || [];
+  const top = bySection.top || [];
+  const curve = bySection.curve || [];
+  const mid = bySection.mid || [];
+  const stemCount = stem.length;
+  const stemMid = Math.min(stemCount - 1, Math.max(0, Math.round((stemCount - 1) * 0.47)));
+  if (stem[0] && top[0]) drawTopologyNetworkLine(ctx, stem[0], top[0], TOPOLOGY_NETWORK_PATH_LINK_DISTANCE, 0.24, primary);
+  if (top.at(-1) && curve[0]) drawTopologyNetworkLine(ctx, top.at(-1), curve[0], TOPOLOGY_NETWORK_PATH_LINK_DISTANCE, 0.22, blue);
+  if (curve.at(-1) && mid[0]) drawTopologyNetworkLine(ctx, curve.at(-1), mid[0], TOPOLOGY_NETWORK_PATH_LINK_DISTANCE, 0.22, blue);
+  if (mid.at(-1) && stem[stemMid]) drawTopologyNetworkLine(ctx, mid.at(-1), stem[stemMid], TOPOLOGY_NETWORK_PATH_LINK_DISTANCE, 0.24, primary);
+}
+
+function drawTopologyNetworkFrame() {
+  topologyNetworkFrame = 0;
+  if (document.body.dataset.theme !== "mesh-topology") return;
+  const size = syncTopologyNetworkCanvas();
+  if (!size || !topologyNetworkCtx) return;
+  const { width, height } = size;
+  const ctx = topologyNetworkCtx;
+  const primary = cssValue("--primary");
+  const blue = cssValue("--blue");
+  ctx.clearRect(0, 0, width, height);
+
+  retargetTopologyNetworkPoints(width, height);
+  topologyNetworkPoints.forEach((point) => updateTopologyNetworkPoint(point, width, height));
+
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  drawTopologyPShapePath(ctx, topologyNetworkPoints, primary, blue);
+  for (let i = 0; i < topologyNetworkPoints.length; i += 1) {
+    const a = topologyNetworkPoints[i];
+    if (topologyNetworkPointer.active) {
+      drawTopologyNetworkLine(ctx, a, topologyNetworkPointer, TOPOLOGY_NETWORK_MOUSE_DISTANCE, 0.12, primary);
+    }
+  }
+
+  topologyNetworkPoints.forEach((point) => {
+    ctx.fillStyle = colorWithAlpha(point.section === "curve" ? blue : primary, 0.48);
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, point.size, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  if (topologyNetworkPointer.active) {
+    const glow = ctx.createRadialGradient(topologyNetworkPointer.x, topologyNetworkPointer.y, 0, topologyNetworkPointer.x, topologyNetworkPointer.y, 24);
+    glow.addColorStop(0, colorWithAlpha(primary, 0.34));
+    glow.addColorStop(1, colorWithAlpha(primary, 0));
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(topologyNetworkPointer.x, topologyNetworkPointer.y, 24, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const now = performance.now();
+  topologyNetworkRipples = topologyNetworkRipples.filter((ripple) => now - ripple.startedAt < 720);
+  topologyNetworkRipples.forEach((ripple) => {
+    const progress = (now - ripple.startedAt) / 720;
+    ctx.strokeStyle = colorWithAlpha(primary, (1 - progress) * 0.32);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(ripple.x, ripple.y, 12 + progress * 54, 0, Math.PI * 2);
+    ctx.stroke();
+  });
+  ctx.restore();
+
+  topologyNetworkFrame = window.requestAnimationFrame(drawTopologyNetworkFrame);
+}
+
+function startTopologyNetworkAnimation() {
+  if (topologyNetworkFrame || !topologyNetworkCanvas) return;
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  topologyNetworkFrame = window.requestAnimationFrame(drawTopologyNetworkFrame);
+}
+
+function stopTopologyNetworkAnimation() {
+  if (!topologyNetworkFrame) return;
+  window.cancelAnimationFrame(topologyNetworkFrame);
+  topologyNetworkFrame = 0;
+}
+
 function topologyNodeLabel(node) {
   if (node.type === "core") return "Router core";
   const metrics = node.metrics || {};
@@ -717,8 +1071,9 @@ function topologyNodeLabel(node) {
 }
 
 function resizeTopologyGraph() {
-  if (!topologyGraph || !topologyGraphContainer) return;
   const canvas = $("topology");
+  syncTopologyNetworkCanvas();
+  if (!topologyGraph || !topologyGraphContainer) return;
   const width = Math.max(320, canvas.clientWidth || 0);
   const height = Math.max(420, canvas.clientHeight || 0);
   topologyGraph.width(width).height(height);
@@ -733,17 +1088,19 @@ function ensureTopologyGraph() {
   }
   canvas.innerHTML = `
     <div class="topology-grid-layer"></div>
+    <canvas class="topology-network-canvas" aria-hidden="true"></canvas>
     <div class="topology-graph"></div>
     <div class="topology-cursor-orb"></div>
     <div class="topology-particles"></div>
     <div class="topology-hint mono">drag canvas / scroll zoom / drag nodes / click node to edit</div>
   `;
+  topologyNetworkCanvas = canvas.querySelector(".topology-network-canvas");
   topologyGraphContainer = canvas.querySelector(".topology-graph");
   topologyParticlesLayer = canvas.querySelector(".topology-particles");
   topologyGraph = ForceGraph()(topologyGraphContainer)
     .backgroundColor("rgba(0,0,0,0)")
     .nodeId("id")
-    .nodeVal((node) => node.type === "core" ? 60 : 22)
+    .nodeVal((node) => node.type === "core" ? 1600 : 530)
     .nodeCanvasObject(drawTopologyNode)
     .nodePointerAreaPaint(paintTopologyPointerArea)
     .nodeLabel(topologyNodeLabel)
@@ -785,6 +1142,7 @@ function ensureTopologyGraph() {
     window.addEventListener("resize", resizeTopologyGraph);
   }
   resizeTopologyGraph();
+  startTopologyNetworkAnimation();
   return topologyGraph;
 }
 
@@ -956,6 +1314,8 @@ function updateTopologyCursor(event) {
   const point = topologyPoint(event);
   canvas.style.setProperty("--cursor-x", `${point.x}px`);
   canvas.style.setProperty("--cursor-y", `${point.y}px`);
+  topologyNetworkPointer = { x: point.x, y: point.y, active: true };
+  startTopologyNetworkAnimation();
   const now = performance.now();
   if (now - topologyLastParticleAt < 28) return;
   topologyLastParticleAt = now;
@@ -971,6 +1331,21 @@ function updateTopologyCursor(event) {
   const particles = layer.querySelectorAll(".topology-cursor-particle");
   if (particles.length > 34) particles[0].remove();
   window.setTimeout(() => particle.remove(), 820);
+}
+
+function leaveTopologyCursor() {
+  topologyNetworkPointer.active = false;
+  const canvas = $("topology");
+  canvas.style.setProperty("--cursor-x", "-100px");
+  canvas.style.setProperty("--cursor-y", "-100px");
+}
+
+function rippleTopologyCursor(event) {
+  if (document.body.dataset.theme !== "mesh-topology") return;
+  const point = topologyPoint(event);
+  topologyNetworkRipples.push({ x: point.x, y: point.y, startedAt: performance.now() });
+  if (topologyNetworkRipples.length > 8) topologyNetworkRipples.shift();
+  startTopologyNetworkAnimation();
 }
 
 function escapeHTML(value) {
@@ -1005,6 +1380,8 @@ $("raw-btn").addEventListener("click", showRawConfig);
 $("save-raw-btn").addEventListener("click", saveRaw);
 $("close-editor-btn").addEventListener("click", () => setEditorOpen(false));
 $("topology").addEventListener("mousemove", updateTopologyCursor);
+$("topology").addEventListener("mouseleave", leaveTopologyCursor);
+$("topology").addEventListener("click", rippleTopologyCursor);
 
 $("app-main").addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-action]");
