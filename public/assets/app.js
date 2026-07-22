@@ -11,10 +11,12 @@ let topologyParticlesLayer = null;
 let topologyResizeObserver = null;
 let topologyNodePositions = new Map();
 let topologyPinnedNodes = new Set();
+let topologyGraphSignature = "";
 let topologyLastParticleAt = 0;
 
 const $ = (id) => document.getElementById(id);
 const THEMES = new Set(["phala-terminal", "vast-console", "clean-ops", "signal-board", "mesh-topology"]);
+const TOPOLOGY_ZOOM_PADDING = 135;
 
 function preferredTheme() {
   const saved = localStorage.getItem("phala-router-admin-theme");
@@ -278,6 +280,24 @@ function topologyColor(tone) {
   return cssValue("--primary");
 }
 
+function colorWithAlpha(color, alpha) {
+  const hex = String(color || "").trim();
+  const short = hex.match(/^#([0-9a-f]{3})$/i);
+  if (short) {
+    const [r, g, b] = short[1].split("").map((part) => parseInt(part + part, 16));
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+  const full = hex.match(/^#([0-9a-f]{6})$/i);
+  if (full) {
+    const value = full[1];
+    const r = parseInt(value.slice(0, 2), 16);
+    const g = parseInt(value.slice(2, 4), 16);
+    const b = parseInt(value.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+  return color;
+}
+
 function topologyNodeMetrics(node) {
   const route = node.route || {};
   const pig = node.runtime?.pig || {};
@@ -356,6 +376,24 @@ function drawLoadRing(ctx, x, y, radius, percent, tone) {
   ctx.lineCap = "butt";
 }
 
+function drawDisabledRing(ctx, x, y, radius) {
+  const muted = cssValue("--muted");
+  ctx.save();
+  ctx.setLineDash([8, 7]);
+  ctx.lineWidth = 7;
+  ctx.strokeStyle = colorWithAlpha(muted, 0.58);
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([2, 10]);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = colorWithAlpha(muted, 0.78);
+  ctx.beginPath();
+  ctx.arc(x, y, radius + 10, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawCoreNode(node, ctx) {
   const x = node.x;
   const y = node.y;
@@ -390,15 +428,22 @@ function drawCoreNode(node, ctx) {
   drawCenteredText(ctx, "ROUTER CORE", x, y - 76, 160, "800 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", primary);
   drawCenteredText(ctx, node.label || "active", x, y - 52, 176, "800 17px Inter, system-ui, sans-serif", text);
 
-  const cellW = 60;
+  const cellW = 56;
   const cellH = 26;
   const gap = 6;
-  const startX = x - cellW - gap / 2;
-  const startY = y - 4;
+  const rowSizes = [3, 3, 2];
+  const startY = y - 17;
   stats.forEach((stat, index) => {
-    const col = index % 2;
-    const row = Math.floor(index / 2);
-    const cx = startX + col * (cellW + gap);
+    let row = 0;
+    let offset = index;
+    while (row < rowSizes.length - 1 && offset >= rowSizes[row]) {
+      offset -= rowSizes[row];
+      row += 1;
+    }
+    const col = offset;
+    const rowCount = rowSizes[row] || rowSizes[rowSizes.length - 1];
+    const rowWidth = rowCount * cellW + (rowCount - 1) * gap;
+    const cx = x - rowWidth / 2 + col * (cellW + gap);
     const cy = startY + row * (cellH + gap);
     drawRoundedRect(ctx, cx, cy, cellW, cellH, 6);
     ctx.fillStyle = surface2;
@@ -407,7 +452,7 @@ function drawCoreNode(node, ctx) {
     ctx.strokeStyle = stat.tone === "neutral" ? line : topologyColor(stat.tone);
     ctx.stroke();
     drawCenteredText(ctx, stat.label, cx + cellW / 2, cy + 8, cellW - 8, "800 7px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", muted);
-    drawCenteredText(ctx, fmt(stat.value), cx + cellW / 2, cy + 20, cellW - 8, "800 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", text);
+    drawCenteredText(ctx, fmt(stat.value), cx + cellW / 2, cy + 20, cellW - 8, "800 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", text);
   });
 
   ctx.fillStyle = surface;
@@ -420,34 +465,55 @@ function drawUpstreamNode(node, ctx) {
   const radius = 74;
   const ringRadius = radius + 8;
   const tone = metrics.tone || "green";
+  const disabled = tone === "disabled" || !node.enabled;
   const surface = cssValue("--surface-2");
   const text = cssValue("--text");
   const muted = cssValue("--muted");
   const mutedStrong = cssValue("--muted-strong");
   const color = topologyColor(tone);
 
-  drawLoadRing(ctx, x, y, ringRadius, metrics.loadPercent || 0, tone);
-  ctx.fillStyle = tone === "pressure" || tone === "red" ? "rgba(255, 79, 110, 0.13)" : surface;
+  if (disabled) drawDisabledRing(ctx, x, y, ringRadius);
+  else drawLoadRing(ctx, x, y, ringRadius, metrics.loadPercent || 0, tone);
+
+  ctx.fillStyle = disabled
+    ? colorWithAlpha(surface, 0.54)
+    : tone === "pressure" || tone === "red" ? "rgba(255, 79, 110, 0.13)" : surface;
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, Math.PI * 2);
   ctx.fill();
   ctx.lineWidth = 1.5;
-  ctx.strokeStyle = color;
+  ctx.strokeStyle = disabled ? colorWithAlpha(muted, 0.70) : color;
+  if (disabled) ctx.setLineDash([6, 6]);
   ctx.stroke();
+  ctx.setLineDash([]);
 
-  if (!node.enabled) {
-    ctx.fillStyle = "rgba(6, 10, 18, 0.52)";
+  if (disabled) {
+    ctx.strokeStyle = colorWithAlpha(muted, 0.72);
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(x, y, radius, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.moveTo(x - 38, y - 38);
+    ctx.lineTo(x + 38, y + 38);
+    ctx.stroke();
   }
 
-  drawCenteredText(ctx, node.label, x, y - 30, 118, "800 13px Inter, system-ui, sans-serif", text);
+  drawCenteredText(ctx, node.label, x, y - 30, 118, "800 13px Inter, system-ui, sans-serif", disabled ? mutedStrong : text);
   drawCenteredText(ctx, metrics.publicModel || "-", x, y - 11, 112, "700 8px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", muted);
-  drawCenteredText(ctx, `run ${fmt(metrics.running)} / ${fmt(metrics.limit)}`, x, y + 13, 118, "800 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", mutedStrong);
+  if (disabled) {
+    const badgeW = 80;
+    const badgeH = 22;
+    drawRoundedRect(ctx, x - badgeW / 2, y + 4, badgeW, badgeH, 6);
+    ctx.fillStyle = colorWithAlpha(muted, 0.18);
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = colorWithAlpha(muted, 0.72);
+    ctx.stroke();
+    drawCenteredText(ctx, "DISABLED", x, y + 15, badgeW - 10, "900 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", mutedStrong);
+  } else {
+    drawCenteredText(ctx, `run ${fmt(metrics.running)} / ${fmt(metrics.limit)}`, x, y + 13, 118, "800 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", mutedStrong);
+  }
   const route = metrics.route || {};
   const wait = Number(metrics.waiting || 0) > 0 ? ` wait ${fmt(metrics.waiting)}` : "";
-  drawCenteredText(ctx, `cache ${fmt(route.selected_by_cache || 0)} load ${fmt(route.selected_by_load || 0)}${wait}`, x, y + 32, 118, "700 8px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", muted);
+  drawCenteredText(ctx, disabled ? "not in routing pool" : `cache ${fmt(route.selected_by_cache || 0)} load ${fmt(route.selected_by_load || 0)}${wait}`, x, y + 35, 118, "700 8px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", muted);
 }
 
 function drawTopologyNode(node, ctx) {
@@ -470,12 +536,20 @@ function paintTopologyPointerArea(node, color, ctx) {
 
 function topologyLinkColor(link) {
   if (link.kind === "mesh") return "rgba(91, 157, 255, 0.20)";
+  if (link.tone === "disabled") return colorWithAlpha(cssValue("--muted"), 0.38);
   return topologyColor(link.tone || "green");
 }
 
 function topologyLinkWidth(link) {
   if (link.kind === "mesh") return 0.7;
+  if (link.tone === "disabled") return 1.15;
   return Math.max(1.6, Math.min(5.5, Number(link.running || 0) / 12 + 1.6));
+}
+
+function topologyLinkDash(link) {
+  if (link.kind === "mesh") return [2, 8];
+  if (link.tone === "disabled") return [8, 8];
+  return null;
 }
 
 function topologyCoreGapForce(minRadius) {
@@ -510,7 +584,7 @@ function rememberTopologyPositions() {
 function initialTopologyPosition(index, total) {
   const count = Math.max(1, total);
   const angle = -Math.PI / 2 + (index / count) * Math.PI * 2;
-  const radius = count <= 4 ? 340 : 390;
+  const radius = count <= 4 ? 260 : 305;
   return {
     x: Math.cos(angle) * radius,
     y: Math.sin(angle) * radius
@@ -573,6 +647,61 @@ function buildTopologyGraph(snapshot) {
   return { nodes: graphNodes, links: graphLinks };
 }
 
+function topologyEndpointId(endpoint) {
+  return endpoint && typeof endpoint === "object" ? endpoint.id : endpoint;
+}
+
+function topologyLinkKey(link) {
+  return `${link.kind}:${topologyEndpointId(link.source)}->${topologyEndpointId(link.target)}`;
+}
+
+function topologySignature(graphData) {
+  const nodeIds = (graphData.nodes || []).map((node) => node.id).sort();
+  const linkIds = (graphData.links || []).map(topologyLinkKey).sort();
+  return JSON.stringify({ nodeIds, linkIds });
+}
+
+function updateExistingTopologyGraph(nextData) {
+  const current = topologyGraph.graphData();
+  const nodeById = new Map((current.nodes || []).map((node) => [node.id, node]));
+  for (const nextNode of nextData.nodes || []) {
+    const currentNode = nodeById.get(nextNode.id);
+    if (!currentNode) return false;
+    if (nextNode.type === "core") {
+      currentNode.label = nextNode.label;
+      currentNode.summary = nextNode.summary;
+      currentNode.fx = 0;
+      currentNode.fy = 0;
+      continue;
+    }
+    currentNode.label = nextNode.label;
+    currentNode.enabled = nextNode.enabled;
+    currentNode.raw = nextNode.raw;
+    currentNode.metrics = nextNode.metrics;
+    if (!Number.isFinite(currentNode.x)) currentNode.x = nextNode.x;
+    if (!Number.isFinite(currentNode.y)) currentNode.y = nextNode.y;
+  }
+
+  const linkByKey = new Map((current.links || []).map((link) => [topologyLinkKey(link), link]));
+  for (const nextLink of nextData.links || []) {
+    const currentLink = linkByKey.get(topologyLinkKey(nextLink));
+    if (!currentLink) return false;
+    currentLink.kind = nextLink.kind;
+    currentLink.tone = nextLink.tone;
+    currentLink.running = nextLink.running;
+    currentLink.waiting = nextLink.waiting;
+  }
+  return true;
+}
+
+function requestTopologyRedraw(graph) {
+  graph.autoPauseRedraw(false);
+  graph.resumeAnimation();
+  window.requestAnimationFrame(() => {
+    graph.autoPauseRedraw(true);
+  });
+}
+
 function topologyNodeLabel(node) {
   if (node.type === "core") return "Router core";
   const metrics = node.metrics || {};
@@ -620,6 +749,7 @@ function ensureTopologyGraph() {
     .nodeLabel(topologyNodeLabel)
     .linkColor(topologyLinkColor)
     .linkWidth(topologyLinkWidth)
+    .linkLineDash(topologyLinkDash)
     .linkDirectionalParticles((link) => link.kind === "route" && link.tone !== "disabled" ? 2 : 0)
     .linkDirectionalParticleWidth((link) => link.tone === "pressure" || link.tone === "red" ? 4 : 2.4)
     .linkDirectionalParticleSpeed((link) => link.tone === "pressure" || link.tone === "red" ? 0.014 : 0.007)
@@ -641,12 +771,12 @@ function ensureTopologyGraph() {
       topologyNodePositions.set(node.id, { x: node.x, y: node.y, fx: node.fx, fy: node.fy });
     });
 
-  topologyGraph.d3Force("charge").strength(-560);
+  topologyGraph.d3Force("charge").strength(-390);
   topologyGraph.d3Force("link")
-    .distance((link) => link.kind === "mesh" ? 320 : 390)
-    .strength((link) => link.kind === "mesh" ? 0.018 : 0.08);
-  topologyGraph.d3Force("center").strength(0.035);
-  topologyGraph.d3Force("core-gap", topologyCoreGapForce(300));
+    .distance((link) => link.kind === "mesh" ? 250 : 295)
+    .strength((link) => link.kind === "mesh" ? 0.014 : 0.07);
+  topologyGraph.d3Force("center").strength(0.04);
+  topologyGraph.d3Force("core-gap", topologyCoreGapForce(255));
 
   if (window.ResizeObserver) {
     topologyResizeObserver = new ResizeObserver(resizeTopologyGraph);
@@ -661,11 +791,22 @@ function ensureTopologyGraph() {
 function renderTopology(snapshot) {
   const graph = ensureTopologyGraph();
   if (!graph) return;
-  graph.graphData(buildTopologyGraph(snapshot));
+  const nextData = buildTopologyGraph(snapshot);
+  const nextSignature = topologySignature(nextData);
+  const structureUnchanged = topologyGraphSignature === nextSignature;
+  if (structureUnchanged && updateExistingTopologyGraph(nextData)) {
+    requestTopologyRedraw(graph);
+    return;
+  }
+
+  graph.graphData(nextData);
+  topologyGraphSignature = nextSignature;
   resizeTopologyGraph();
   if (!topologyGraphReady) {
     topologyGraphReady = true;
-    window.setTimeout(() => graph.zoomToFit(500, 90), 180);
+    window.setTimeout(() => graph.zoomToFit(500, TOPOLOGY_ZOOM_PADDING), 180);
+  } else {
+    window.setTimeout(() => graph.zoomToFit(320, TOPOLOGY_ZOOM_PADDING), 120);
   }
 }
 
