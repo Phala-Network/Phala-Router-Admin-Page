@@ -494,7 +494,7 @@ const server = http.createServer(async (req, res) => {
     if (!requireAuth(req, res)) return;
     const url = new URL(req.url, "http://localhost");
 
-    if (req.method === "GET" && (url.pathname === "/" || url.pathname.startsWith("/assets/"))) {
+    if (req.method === "GET" && (url.pathname === "/" || url.pathname.startsWith("/assets/") || url.pathname.startsWith("/vendor/"))) {
       serveStatic(req, res, url.pathname);
       return;
     }
