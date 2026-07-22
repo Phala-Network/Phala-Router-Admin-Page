@@ -1,0 +1,14 @@
+services:
+  router-admin:
+    build: .
+    container_name: router-admin
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      PORT: "8080"
+      ROUTERS_FILE: /app/config/routers.json
+    volumes:
+      - ./config/routers.json:/app/config/routers.json:ro

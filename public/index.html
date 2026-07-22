@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phala Router Admin</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <header>
+    <h1>Phala Router Admin</h1>
+    <label class="router-label">
+      <span>Router</span>
+      <select id="router-select"></select>
+    </label>
+    <button id="refresh-btn" class="primary" type="button">Refresh</button>
+    <div id="status-line" class="status-line">loading</div>
+  </header>
+
+  <main>
+    <section id="summary" class="summary-grid"></section>
+
+    <section class="panel">
+      <div class="panel-title">Nodes</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Enabled</th>
+              <th>Node</th>
+              <th>Endpoint</th>
+              <th>PIG run</th>
+              <th>Backend</th>
+              <th>Router</th>
+              <th>Selections</th>
+              <th>Health</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="nodes-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">Add or update node</div>
+      <div class="form-grid">
+        <label>Name<input id="node-name" placeholder="node-name"></label>
+        <label>Base URL<input id="base-url" placeholder="https://example.phala.com"></label>
+        <label>Provider<input id="provider"></label>
+        <label>Public model<input id="public-model"></label>
+        <label>Upstream model<input id="upstream-model"></label>
+        <label>Shared bearer
+          <select id="use-shared-bearer">
+            <option value="true">true</option>
+            <option value="false">false</option>
+          </select>
+        </label>
+        <label>Path<input id="path" value="/v1/chat/completions"></label>
+        <button id="save-btn" class="primary" type="button">Save node</button>
+        <button id="load-btn" type="button">Load selected</button>
+        <button id="raw-btn" type="button">Edit raw</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">Raw upstream config</div>
+      <textarea id="raw-json" spellcheck="false"></textarea>
+      <div class="raw-actions">
+        <button id="save-raw-btn" class="primary" type="button">Replace upstreams</button>
+      </div>
+      <pre id="log"></pre>
+    </section>
+  </main>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>
