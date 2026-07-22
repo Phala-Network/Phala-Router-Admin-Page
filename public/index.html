@@ -4,23 +4,58 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Phala Router Admin</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
-  <header>
-    <h1>Phala Router Admin</h1>
-    <label class="router-label">
-      <span>Router</span>
-      <select id="router-select"></select>
-    </label>
-    <button id="refresh-btn" class="primary" type="button">Refresh</button>
+  <header class="app-header">
+    <div class="brand-block">
+      <div class="brand-mark">PRA</div>
+      <div>
+        <h1>Phala Router Admin</h1>
+        <div class="header-subtitle">TEE routing control plane</div>
+      </div>
+    </div>
+    <div class="router-control">
+      <label class="router-label">
+        <span>Router</span>
+        <select id="router-select"></select>
+      </label>
+      <label class="theme-label">
+        <span>Version</span>
+        <select id="theme-select">
+          <option value="phala-terminal">A. Phala Terminal</option>
+          <option value="vast-console">B. Vast Fleet</option>
+          <option value="clean-ops">C. Clean Ops</option>
+          <option value="signal-board">D. Signal Board</option>
+          <option value="mesh-topology">E. Mesh Topology</option>
+        </select>
+      </label>
+      <button id="refresh-btn" class="primary" type="button">Refresh</button>
+    </div>
     <div id="status-line" class="status-line">loading</div>
   </header>
 
-  <main>
-    <section id="summary" class="summary-grid"></section>
+  <main id="app-main">
+    <section id="summary" class="summary-grid layout-summary"></section>
 
-    <section class="panel">
+    <section class="panel layout-topology">
+      <div class="panel-title">
+        <span>Topology mesh</span>
+        <span class="panel-subtitle">router-to-upstream signal graph</span>
+      </div>
+      <div id="topology" class="topology-canvas"></div>
+    </section>
+
+    <section class="panel layout-cards">
+      <div class="panel-title">
+        <span>Fleet cards</span>
+        <span class="panel-subtitle">node-first control surface</span>
+      </div>
+      <div id="node-cards" class="node-card-grid"></div>
+    </section>
+
+    <section class="panel layout-nodes">
       <div class="panel-title">Nodes</div>
       <div class="table-wrap">
         <table>
@@ -42,8 +77,11 @@
       </div>
     </section>
 
-    <section class="panel">
-      <div class="panel-title">Add or update node</div>
+    <section class="panel layout-editor">
+      <div class="panel-title">
+        <span>Add or update node</span>
+        <button id="close-editor-btn" class="drawer-close" type="button">Close</button>
+      </div>
       <div class="form-grid">
         <label>Name<input id="node-name" placeholder="node-name"></label>
         <label>Base URL<input id="base-url" placeholder="https://example.phala.com"></label>
@@ -63,7 +101,7 @@
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel layout-raw">
       <div class="panel-title">Raw upstream config</div>
       <textarea id="raw-json" spellcheck="false"></textarea>
       <div class="raw-actions">
@@ -73,6 +111,7 @@
     </section>
   </main>
 
+  <script src="/vendor/force-graph/force-graph.min.js"></script>
   <script src="/assets/app.js"></script>
 </body>
 </html>
