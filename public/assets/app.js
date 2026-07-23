@@ -26,7 +26,8 @@ const TOPOLOGY_NETWORK_MIN_POINTS = 72;
 const TOPOLOGY_NETWORK_MAX_POINTS = 118;
 const TOPOLOGY_NETWORK_POINT_LINK_DISTANCE = 126;
 const TOPOLOGY_NETWORK_MOUSE_LINK_DISTANCE = 210;
-const TOPOLOGY_NETWORK_MOUSE_PUSH_DISTANCE = 125;
+const TOPOLOGY_NETWORK_MOUSE_CAPTURE_DISTANCE = 210;
+const TOPOLOGY_NETWORK_MOUSE_CAPTURE_INNER = 26;
 
 function preferredTheme() {
   const saved = localStorage.getItem("phala-router-admin-theme");
@@ -793,12 +794,20 @@ function updateTopologyNetworkPoint(point, width, height) {
     const dx = topologyNetworkPointer.x - point.x;
     const dy = topologyNetworkPointer.y - point.y;
     const distanceSq = dx * dx + dy * dy;
-    const pushDistanceSq = TOPOLOGY_NETWORK_MOUSE_PUSH_DISTANCE * TOPOLOGY_NETWORK_MOUSE_PUSH_DISTANCE;
-    if (distanceSq > 4 && distanceSq < pushDistanceSq) {
+    const captureDistanceSq = TOPOLOGY_NETWORK_MOUSE_CAPTURE_DISTANCE * TOPOLOGY_NETWORK_MOUSE_CAPTURE_DISTANCE;
+    if (distanceSq > 4 && distanceSq < captureDistanceSq) {
       const distance = Math.sqrt(distanceSq);
-      const force = (1 - distance / TOPOLOGY_NETWORK_MOUSE_PUSH_DISTANCE) * 0.028;
-      point.vx -= (dx / distance) * force;
-      point.vy -= (dy / distance) * force;
+      const pull = distance > TOPOLOGY_NETWORK_MOUSE_CAPTURE_DISTANCE * 0.5 ? 0.026 : 0.012;
+      point.x += dx * pull;
+      point.y += dy * pull;
+      if (distance > TOPOLOGY_NETWORK_MOUSE_CAPTURE_INNER) {
+        const force = (1 - distance / TOPOLOGY_NETWORK_MOUSE_CAPTURE_DISTANCE) * 0.018;
+        point.vx += (dx / distance) * force;
+        point.vy += (dy / distance) * force;
+      } else {
+        point.vx *= 0.78;
+        point.vy *= 0.78;
+      }
     }
   }
 
