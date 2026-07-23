@@ -331,12 +331,24 @@ function routeFor(upstream, routes) {
     || null;
 }
 
+function errorMessage(err) {
+  return String(err && err.message ? err.message : err);
+}
+
+function settledSnapshot(result, fallback) {
+  if (result.status === "fulfilled") return result.value;
+  return { ...fallback, error: errorMessage(result.reason) };
+}
+
 async function runtimeSnapshot(router) {
-  const [upstreamsSnapshot, routerSnapshot, modelsSnapshot] = await Promise.all([
+  const [upstreamsResult, routerResult, modelsResult] = await Promise.allSettled([
     gatewayJSON(router, "GET", "/v1/admin/upstreams"),
-    gatewayJSON(router, "GET", "/v1/admin/router").catch((err) => ({ error: String(err && err.message ? err.message : err), routes: [] })),
-    gatewayJSON(router, "GET", "/v1/models").catch((err) => ({ error: String(err && err.message ? err.message : err), data: [] }))
+    gatewayJSON(router, "GET", "/v1/admin/router"),
+    gatewayJSON(router, "GET", "/v1/models")
   ]);
+  const upstreamsSnapshot = settledSnapshot(upstreamsResult, { upstreams: [] });
+  const routerSnapshot = settledSnapshot(routerResult, { routes: [] });
+  const modelsSnapshot = settledSnapshot(modelsResult, { data: [] });
   const upstreams = upstreamsSnapshot.upstreams || [];
   const routes = routerSnapshot.routes || [];
   const nodes = await Promise.all(upstreams.map(async (upstream) => {
@@ -384,7 +396,8 @@ async function runtimeSnapshot(router) {
       url: router.url,
       config_path: upstreamsSnapshot.config_path,
       config_digest: upstreamsSnapshot.config_digest,
-      router_digest: routerSnapshot.upstream_config_digest
+      router_digest: routerSnapshot.upstream_config_digest,
+      error: upstreamsSnapshot.error || routerSnapshot.error || modelsSnapshot.error || null
     },
     router: routerSnapshot,
     models: modelsSnapshot,

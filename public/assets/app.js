@@ -1204,7 +1204,8 @@ function render(snapshot) {
   $("node-cards").innerHTML = nodes.map(renderNodeCard).join("");
   if (document.body.dataset.theme === "mesh-topology") renderTopology(snapshot);
   const router = snapshot.selected_router || {};
-  setStatus(`${router.label || router.id || ""} ${router.url || ""} | ${snapshot.generated_at || ""}`.trim());
+  const gatewayError = snapshot.gateway?.error ? ` | gateway error: ${snapshot.gateway.error}` : "";
+  setStatus(`${router.label || router.id || ""} ${router.url || ""} | ${snapshot.generated_at || ""}${gatewayError}`.trim());
 }
 
 async function loadRouters() {
@@ -1236,7 +1237,8 @@ async function refresh() {
   try {
     const snapshot = await api("/api/runtime");
     render(snapshot);
-    log("");
+    if (snapshot.gateway?.error) log(snapshot.gateway.error, "err");
+    else log("");
   } catch (err) {
     log(err.message, "err");
     setStatus("refresh failed");
