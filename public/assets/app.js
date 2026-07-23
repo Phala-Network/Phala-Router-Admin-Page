@@ -361,11 +361,11 @@ function summaryStats(summary) {
   return [
     { label: "nodes", value: summary.nodes, tone: "neutral" },
     { label: "enabled", value: summary.enabled_nodes, tone: "green" },
+    { label: "stale", value: summary.stale_nodes, tone: Number(summary.stale_nodes || 0) > 0 ? "yellow" : "neutral" },
     { label: "router", value: summary.router_running, tone: Number(summary.router_running || 0) > 0 ? "blue" : "neutral" },
     { label: "PIG", value: summary.pig_running, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "green" },
     { label: "backend", value: summary.backend_running, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "green" },
     { label: "waiting", value: summary.waiting, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "neutral" },
-    { label: "stale", value: summary.stale_nodes, tone: Number(summary.stale_nodes || 0) > 0 ? "yellow" : "neutral" },
     { label: "cache", value: summary.cache_selected, tone: "blue" },
     { label: "load", value: summary.load_selected, tone: "yellow" }
   ];
@@ -395,6 +395,20 @@ function drawCenteredText(ctx, text, x, y, width, font, color) {
   let out = value;
   while (ctx.measureText(out).width > width && out.length > 4) out = `${out.slice(0, -4)}...`;
   ctx.fillText(out, x, y);
+}
+
+function coreStatRows(count) {
+  if (count <= 3) return [count];
+  if (count <= 6) return [3, count - 3];
+  if (count <= 9) return [3, 3, count - 6];
+  const rows = [];
+  let remaining = count;
+  while (remaining > 0) {
+    const rowCount = Math.min(3, remaining);
+    rows.push(rowCount);
+    remaining -= rowCount;
+  }
+  return rows;
 }
 
 function drawLoadRing(ctx, x, y, radius, percent, tone) {
@@ -466,11 +480,12 @@ function drawCoreNode(node, ctx) {
   drawCenteredText(ctx, "ROUTER CORE", x, y - 76, 160, "800 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", primary);
   drawCenteredText(ctx, node.label || "active", x, y - 52, 176, "800 17px Inter, system-ui, sans-serif", text);
 
-  const cellW = 56;
-  const cellH = 26;
-  const gap = 6;
-  const rowSizes = [3, 3, 2];
-  const startY = y - 17;
+  const cellW = 54;
+  const cellH = 24;
+  const gap = 5;
+  const rowSizes = coreStatRows(stats.length);
+  const gridH = rowSizes.length * cellH + Math.max(0, rowSizes.length - 1) * gap;
+  const startY = y - gridH / 2 + 16;
   stats.forEach((stat, index) => {
     let row = 0;
     let offset = index;
