@@ -12,9 +12,11 @@ const basicPasswordHash = process.env.BASIC_AUTH_PASSWORD_SHA256 || "";
 const timeoutMs = Number(process.env.METRICS_TIMEOUT_MS || "2500");
 const metricsStaleTtlMs = Number(process.env.METRICS_STALE_TTL_MS || "60000");
 const controlStaleTtlMs = Number(process.env.CONTROL_STALE_TTL_MS || "60000");
+const runtimeStaleTtlMs = Number(process.env.RUNTIME_STALE_TTL_MS || "60000");
 const staticRoot = path.join(__dirname, "public");
 const metricsCache = new Map();
 const controlCache = new Map();
+const runtimeCache = new Map();
 
 function readRoutersConfig() {
   const file = process.env.ROUTERS_FILE || "";
@@ -425,7 +427,7 @@ function cachedGatewaySnapshot(router, name, result, fallback) {
   return { value: { ...fallback, error: message }, stale: false, warning: "", error: message };
 }
 
-async function runtimeSnapshot(router) {
+async function buildRuntimeSnapshot(router) {
   const [upstreamsResult, routerResult, modelsResult] = await Promise.allSettled([
     gatewayJSON(router, "GET", "/v1/admin/upstreams"),
     gatewayJSON(router, "GET", "/v1/admin/router"),
@@ -499,6 +501,53 @@ async function runtimeSnapshot(router) {
     nodes,
     summary
   };
+}
+
+function markRuntimeCache(snapshot, cachedAt, refreshInFlight) {
+  const out = cloneJSON(snapshot);
+  const ageSeconds = Math.max(0, Math.round((Date.now() - cachedAt) / 1000));
+  out.served_at = new Date().toISOString();
+  out.snapshot_cache = {
+    status: refreshInFlight ? "cached" : "fresh",
+    age_seconds: ageSeconds,
+    refresh_in_progress: Boolean(refreshInFlight),
+    max_age_seconds: Math.round(runtimeStaleTtlMs / 1000)
+  };
+  return out;
+}
+
+async function refreshRuntimeCache(router) {
+  const key = router.id;
+  const existing = runtimeCache.get(key);
+  if (existing?.promise) return existing.promise;
+  const promise = buildRuntimeSnapshot(router)
+    .then((snapshot) => {
+      const entry = { snapshot: cloneJSON(snapshot), at: Date.now(), promise: null };
+      runtimeCache.set(key, entry);
+      return snapshot;
+    })
+    .catch((err) => {
+      if (existing) runtimeCache.set(key, { ...existing, promise: null });
+      throw err;
+    });
+  runtimeCache.set(key, { ...(existing || {}), promise });
+  return promise;
+}
+
+async function runtimeSnapshot(router) {
+  const key = router.id;
+  const cached = runtimeCache.get(key);
+  if (cached?.snapshot && cacheFresh(cached, runtimeStaleTtlMs)) {
+    if (!cached.promise) {
+      refreshRuntimeCache(router).catch((err) => {
+        console.error(`runtime refresh failed for ${router.id}: ${err.message}`);
+      });
+    }
+    return markRuntimeCache(cached.snapshot, cached.at, true);
+  }
+  const snapshot = await refreshRuntimeCache(router);
+  const updated = runtimeCache.get(key);
+  return markRuntimeCache(snapshot, updated?.at || Date.now(), false);
 }
 
 function normalizeNode(input, router) {
