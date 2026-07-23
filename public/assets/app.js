@@ -26,8 +26,11 @@ const TOPOLOGY_NETWORK_MIN_POINTS = 72;
 const TOPOLOGY_NETWORK_MAX_POINTS = 118;
 const TOPOLOGY_NETWORK_POINT_LINK_DISTANCE = 126;
 const TOPOLOGY_NETWORK_MOUSE_LINK_DISTANCE = 210;
-const TOPOLOGY_NETWORK_MOUSE_CAPTURE_DISTANCE = 210;
-const TOPOLOGY_NETWORK_MOUSE_CAPTURE_INNER = 26;
+const TOPOLOGY_NETWORK_MOUSE_ORBIT_DISTANCE = 214;
+const TOPOLOGY_NETWORK_MOUSE_ORBIT_RADIUS = 74;
+const TOPOLOGY_NETWORK_MOUSE_ORBIT_FORCE = 0.036;
+const TOPOLOGY_NETWORK_MOUSE_RADIAL_FORCE = 0.0018;
+const TOPOLOGY_NETWORK_MAX_SPEED = 1.18;
 
 function preferredTheme() {
   const saved = localStorage.getItem("phala-router-admin-theme");
@@ -760,7 +763,8 @@ function resetTopologyNetworkPoints(width, height) {
       y: Math.random() * height,
       vx: (Math.random() * 2 - 1) * 0.58,
       vy: (Math.random() * 2 - 1) * 0.58,
-      size: 0.8 + Math.random() * 0.9
+      size: 0.8 + Math.random() * 0.9,
+      orbitDir: Math.random() < 0.5 ? -1 : 1
     };
   });
 }
@@ -791,24 +795,35 @@ function syncTopologyNetworkCanvas() {
 
 function updateTopologyNetworkPoint(point, width, height) {
   if (topologyNetworkPointer.active) {
-    const dx = topologyNetworkPointer.x - point.x;
-    const dy = topologyNetworkPointer.y - point.y;
+    const dx = point.x - topologyNetworkPointer.x;
+    const dy = point.y - topologyNetworkPointer.y;
     const distanceSq = dx * dx + dy * dy;
-    const captureDistanceSq = TOPOLOGY_NETWORK_MOUSE_CAPTURE_DISTANCE * TOPOLOGY_NETWORK_MOUSE_CAPTURE_DISTANCE;
-    if (distanceSq > 4 && distanceSq < captureDistanceSq) {
+    const orbitDistanceSq = TOPOLOGY_NETWORK_MOUSE_ORBIT_DISTANCE * TOPOLOGY_NETWORK_MOUSE_ORBIT_DISTANCE;
+    if (distanceSq > 4 && distanceSq < orbitDistanceSq) {
       const distance = Math.sqrt(distanceSq);
-      const pull = distance > TOPOLOGY_NETWORK_MOUSE_CAPTURE_DISTANCE * 0.5 ? 0.026 : 0.012;
-      point.x += dx * pull;
-      point.y += dy * pull;
-      if (distance > TOPOLOGY_NETWORK_MOUSE_CAPTURE_INNER) {
-        const force = (1 - distance / TOPOLOGY_NETWORK_MOUSE_CAPTURE_DISTANCE) * 0.018;
-        point.vx += (dx / distance) * force;
-        point.vy += (dy / distance) * force;
-      } else {
-        point.vx *= 0.78;
-        point.vy *= 0.78;
+      const nx = dx / distance;
+      const ny = dy / distance;
+      const proximity = 1 - distance / TOPOLOGY_NETWORK_MOUSE_ORBIT_DISTANCE;
+      const radiusError = distance - TOPOLOGY_NETWORK_MOUSE_ORBIT_RADIUS;
+      const radial = -radiusError * TOPOLOGY_NETWORK_MOUSE_RADIAL_FORCE;
+      const tangent = proximity * TOPOLOGY_NETWORK_MOUSE_ORBIT_FORCE * (point.orbitDir || 1);
+
+      point.vx += nx * radial + -ny * tangent;
+      point.vy += ny * radial + nx * tangent;
+      point.x += nx * radial * 2.2;
+      point.y += ny * radial * 2.2;
+
+      if (Math.abs(radiusError) < 12) {
+        point.vx *= 0.985;
+        point.vy *= 0.985;
       }
     }
+  }
+
+  const speed = Math.hypot(point.vx, point.vy);
+  if (speed > TOPOLOGY_NETWORK_MAX_SPEED) {
+    point.vx = (point.vx / speed) * TOPOLOGY_NETWORK_MAX_SPEED;
+    point.vy = (point.vy / speed) * TOPOLOGY_NETWORK_MAX_SPEED;
   }
 
   point.x += point.vx;
