@@ -229,9 +229,13 @@ h1 {
 
 .router-control {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) minmax(170px, 220px) max-content;
+  grid-template-columns: minmax(260px, 1fr) minmax(170px, 220px) max-content max-content;
   gap: 10px;
   align-items: end;
+}
+
+.router-control button {
+  min-width: 108px;
 }
 
 main {
@@ -1232,7 +1236,7 @@ body[data-theme="mesh-topology"] .layout-nodes table {
   }
 
   .router-control {
-    grid-template-columns: 1fr 190px max-content;
+    grid-template-columns: 1fr 190px max-content max-content;
   }
 
   .status-line {

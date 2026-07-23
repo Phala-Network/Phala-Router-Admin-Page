@@ -12,6 +12,7 @@ let topologyNetworkCtx = null;
 let topologyNetworkFrame = 0;
 let topologyNetworkLastSize = "";
 let topologyNetworkPoints = [];
+let topologyBackgroundPoints = [];
 let topologyResizeObserver = null;
 let topologyNodePositions = new Map();
 let topologyPinnedNodes = new Set();
@@ -33,6 +34,13 @@ const TOPOLOGY_NETWORK_RADIAL_FORCE = 0.00165;
 const TOPOLOGY_NETWORK_MAX_SPEED = 1.18;
 const TOPOLOGY_NETWORK_EDGE_PADDING = 28;
 const TOPOLOGY_NETWORK_MIN_ORBIT_RADIUS = 30;
+const TOPOLOGY_NETWORK_MIN_ORBIT_SPEED = 0.58;
+const TOPOLOGY_NETWORK_MAX_ORBIT_SPEED = 1.52;
+const TOPOLOGY_BACKGROUND_MIN_POINTS = 34;
+const TOPOLOGY_BACKGROUND_MAX_POINTS = 68;
+const TOPOLOGY_BACKGROUND_POINT_LINK_DISTANCE = 164;
+const TOPOLOGY_BACKGROUND_MIN_SPEED = 0.045;
+const TOPOLOGY_BACKGROUND_MAX_SPEED = 0.46;
 const TOPOLOGY_ROUTE_PARTICLE_SPEED = 0.00032;
 
 function preferredTheme() {
@@ -772,6 +780,21 @@ function topologyNetworkPointCount(width, height) {
   return Math.max(TOPOLOGY_NETWORK_MIN_POINTS, Math.min(TOPOLOGY_NETWORK_MAX_POINTS, raw));
 }
 
+function topologyBackgroundPointCount(width, height) {
+  const raw = Math.round((width * height) / 18500);
+  return Math.max(TOPOLOGY_BACKGROUND_MIN_POINTS, Math.min(TOPOLOGY_BACKGROUND_MAX_POINTS, raw));
+}
+
+function randomTopologyBackgroundSpeed() {
+  const curve = Math.random() ** 1.35;
+  return TOPOLOGY_BACKGROUND_MIN_SPEED + curve * (TOPOLOGY_BACKGROUND_MAX_SPEED - TOPOLOGY_BACKGROUND_MIN_SPEED);
+}
+
+function randomTopologyNetworkOrbitSpeed() {
+  const curve = Math.random() ** 1.18;
+  return TOPOLOGY_NETWORK_MIN_ORBIT_SPEED + curve * (TOPOLOGY_NETWORK_MAX_ORBIT_SPEED - TOPOLOGY_NETWORK_MIN_ORBIT_SPEED);
+}
+
 function resetTopologyNetworkPoints(width, height) {
   const count = topologyNetworkPointCount(width, height);
   topologyNetworkPoints = Array.from({ length: count }, () => {
@@ -781,7 +804,23 @@ function resetTopologyNetworkPoints(width, height) {
       vx: (Math.random() * 2 - 1) * 0.58,
       vy: (Math.random() * 2 - 1) * 0.58,
       size: 0.8 + Math.random() * 0.9,
-      orbitDir: Math.random() < 0.5 ? -1 : 1
+      orbitDir: Math.random() < 0.5 ? -1 : 1,
+      orbitSpeed: randomTopologyNetworkOrbitSpeed()
+    };
+  });
+}
+
+function resetTopologyBackgroundPoints(width, height) {
+  const count = topologyBackgroundPointCount(width, height);
+  topologyBackgroundPoints = Array.from({ length: count }, () => {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = randomTopologyBackgroundSpeed();
+    return {
+      x: Math.random() * width,
+      y: Math.random() * height,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      size: 0.65 + Math.random() * 0.7
     };
   });
 }
@@ -803,10 +842,12 @@ function syncTopologyNetworkCanvas() {
     topologyNetworkCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
   const nextSize = `${width}x${height}`;
-  if (topologyNetworkLastSize !== nextSize || topologyNetworkPoints.length === 0) {
+  const sizeChanged = topologyNetworkLastSize !== nextSize;
+  if (sizeChanged || topologyNetworkPoints.length === 0) {
     topologyNetworkLastSize = nextSize;
     resetTopologyNetworkPoints(width, height);
   }
+  if (sizeChanged || topologyBackgroundPoints.length === 0) resetTopologyBackgroundPoints(width, height);
   return { width, height };
 }
 
@@ -921,6 +962,20 @@ function topologyStableOffset(value) {
   return hash / 9973;
 }
 
+function updateTopologyBackgroundPoint(point, width, height) {
+  point.x += point.vx;
+  point.y += point.vy;
+
+  if (point.x <= 0 || point.x >= width) {
+    point.vx *= -1;
+    point.x = Math.max(0, Math.min(width, point.x));
+  }
+  if (point.y <= 0 || point.y >= height) {
+    point.vy *= -1;
+    point.y = Math.max(0, Math.min(height, point.y));
+  }
+}
+
 function updateTopologyNetworkPoint(point, width, height, sources) {
   const source = nearestTopologyNetworkSource(point, sources);
   if (source && source.distanceSq > 4) {
@@ -930,7 +985,7 @@ function updateTopologyNetworkPoint(point, width, height, sources) {
     const proximity = 1 - distance / source.captureDistance;
     const radiusError = distance - source.orbitRadius;
     const radial = -radiusError * source.radialForce;
-    const tangent = proximity * source.orbitForce * (point.orbitDir || 1);
+    const tangent = proximity * source.orbitForce * (point.orbitSpeed || 1) * (point.orbitDir || 1);
 
     point.vx += nx * radial + -ny * tangent;
     point.vy += ny * radial + nx * tangent;
@@ -995,6 +1050,20 @@ function drawTopologyNetworkLine(ctx, a, b, maxDistance, baseAlpha, color, lineS
   ctx.stroke();
 }
 
+function drawTopologyBackgroundPoints(ctx, width, height, color) {
+  topologyBackgroundPoints.forEach((point) => updateTopologyBackgroundPoint(point, width, height));
+
+  for (let i = 0; i < topologyBackgroundPoints.length; i += 1) {
+    const a = topologyBackgroundPoints[i];
+    ctx.fillStyle = colorWithAlpha(color, 0.32);
+    ctx.fillRect(a.x - a.size / 2, a.y - a.size / 2, a.size, a.size);
+
+    for (let j = i + 1; j < topologyBackgroundPoints.length; j += 1) {
+      drawTopologyNetworkLine(ctx, a, topologyBackgroundPoints[j], TOPOLOGY_BACKGROUND_POINT_LINK_DISTANCE, 0.16, color, 0.44);
+    }
+  }
+}
+
 function drawTopologyRouteParticle(ctx, segment, t, color) {
   const sx = segment.source.x;
   const sy = segment.source.y;
@@ -1038,7 +1107,8 @@ function drawTopologyRouteParticles(ctx, width, height) {
     const speed = (segment.tone === "pressure" || segment.tone === "red") ? TOPOLOGY_ROUTE_PARTICLE_SPEED * 1.5 : TOPOLOGY_ROUTE_PARTICLE_SPEED;
     const count = segment.direction === "upstream_to_core" ? 2 : 3;
     for (let i = 0; i < count; i += 1) {
-      const t = (now * speed + phase + i / count) % 1;
+      const progress = now * speed + phase + i / count;
+      const t = progress % 1;
       drawTopologyRouteParticle(ctx, segment, t, color);
     }
   });
@@ -1059,6 +1129,8 @@ function drawTopologyNetworkFrame() {
 
   ctx.save();
   ctx.globalCompositeOperation = "lighter";
+  drawTopologyBackgroundPoints(ctx, width, height, primary);
+
   for (let i = 0; i < topologyNetworkPoints.length; i += 1) {
     const a = topologyNetworkPoints[i];
     drawTopologySourceLine(ctx, a, nearestTopologyNetworkSource(a, sources), primary);
