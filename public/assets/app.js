@@ -31,6 +31,8 @@ const TOPOLOGY_NETWORK_UPSTREAM_ORBIT_RADIUS = 94;
 const TOPOLOGY_NETWORK_ORBIT_FORCE = 0.033;
 const TOPOLOGY_NETWORK_RADIAL_FORCE = 0.00165;
 const TOPOLOGY_NETWORK_MAX_SPEED = 1.18;
+const TOPOLOGY_NETWORK_EDGE_PADDING = 28;
+const TOPOLOGY_NETWORK_MIN_ORBIT_RADIUS = 30;
 const TOPOLOGY_ROUTE_PARTICLE_SPEED = 0.00032;
 
 function preferredTheme() {
@@ -817,21 +819,46 @@ function topologyNodeScreenPosition(node, width, height) {
   return { x: width / 2 + node.x, y: height / 2 + node.y };
 }
 
+function topologyGraphZoomScale() {
+  if (!topologyGraph || typeof topologyGraph.zoom !== "function") return 1;
+  const zoom = topologyGraph.zoom();
+  return Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+}
+
+function boundedTopologySourceRadii(pos, width, height, orbitRadius, captureDistance) {
+  const visibleOrbitLimit = Math.min(pos.x, width - pos.x, pos.y, height - pos.y) - TOPOLOGY_NETWORK_EDGE_PADDING;
+  if (!Number.isFinite(visibleOrbitLimit) || visibleOrbitLimit < TOPOLOGY_NETWORK_MIN_ORBIT_RADIUS) return null;
+  const boundedOrbitRadius = Math.min(orbitRadius, visibleOrbitLimit);
+  const boundedCaptureDistance = Math.min(
+    captureDistance,
+    Math.max(boundedOrbitRadius + TOPOLOGY_NETWORK_EDGE_PADDING * 1.5, visibleOrbitLimit + TOPOLOGY_NETWORK_EDGE_PADDING)
+  );
+  return {
+    orbitRadius: boundedOrbitRadius,
+    captureDistance: Math.max(boundedCaptureDistance, boundedOrbitRadius + TOPOLOGY_NETWORK_EDGE_PADDING)
+  };
+}
+
 function topologyNetworkSources(width, height) {
   if (!topologyGraph) return [];
   const graphData = topologyGraph.graphData();
+  const zoomScale = topologyGraphZoomScale();
   return (graphData.nodes || [])
     .filter((node) => node.type === "core" || (node.enabled && node.metrics?.tone !== "disabled"))
     .map((node) => {
       const pos = topologyNodeScreenPosition(node, width, height);
       if (!pos) return null;
       const core = node.type === "core";
+      const captureDistance = (core ? TOPOLOGY_NETWORK_CORE_CAPTURE_DISTANCE : TOPOLOGY_NETWORK_UPSTREAM_CAPTURE_DISTANCE) * zoomScale;
+      const orbitRadius = (core ? TOPOLOGY_NETWORK_CORE_ORBIT_RADIUS : TOPOLOGY_NETWORK_UPSTREAM_ORBIT_RADIUS) * zoomScale;
+      const radii = boundedTopologySourceRadii(pos, width, height, orbitRadius, captureDistance);
+      if (!radii) return null;
       return {
         x: pos.x,
         y: pos.y,
         type: node.type,
-        captureDistance: core ? TOPOLOGY_NETWORK_CORE_CAPTURE_DISTANCE : TOPOLOGY_NETWORK_UPSTREAM_CAPTURE_DISTANCE,
-        orbitRadius: core ? TOPOLOGY_NETWORK_CORE_ORBIT_RADIUS : TOPOLOGY_NETWORK_UPSTREAM_ORBIT_RADIUS,
+        captureDistance: radii.captureDistance,
+        orbitRadius: radii.orbitRadius,
         orbitForce: core ? TOPOLOGY_NETWORK_ORBIT_FORCE * 0.74 : TOPOLOGY_NETWORK_ORBIT_FORCE,
         radialForce: core ? TOPOLOGY_NETWORK_RADIAL_FORCE * 0.8 : TOPOLOGY_NETWORK_RADIAL_FORCE
       };
