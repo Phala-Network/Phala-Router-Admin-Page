@@ -416,13 +416,55 @@ function normalizeNode(input, router) {
   };
 }
 
+function copyIfPresent(input, output, key) {
+  if (Object.prototype.hasOwnProperty.call(input, key) && input[key] !== undefined) {
+    output[key] = input[key];
+  }
+}
+
+function upstreamForWrite(input) {
+  const out = {};
+  for (const key of [
+    "name",
+    "enabled",
+    "provider",
+    "base_url",
+    "path",
+    "models",
+    "accepted_workload_ids",
+    "accepted_image_digests",
+    "accepted_dstack_kms_root_public_keys",
+    "pccs_url",
+    "verifier_cache_seconds",
+    "connect_timeout_seconds",
+    "read_timeout_seconds",
+    "verifier_request_timeout_seconds",
+    "verification_refresh_seconds",
+    "session_refresh_seconds",
+    "chutes_e2ee_api_base",
+    "chutes_chute_ids",
+    "chutes_e2ee_discovery_rounds",
+    "chutes_e2ee_discovery_interval_seconds"
+  ]) {
+    copyIfPresent(input, out, key);
+  }
+
+  if (typeof input.bearer_token === "string" && input.bearer_token) {
+    out.bearer_token = input.bearer_token;
+  } else if (input.use_shared_bearer === true || input.bearer_token_configured === true) {
+    out.bearer_token = "${TOKEN}";
+  }
+
+  return out;
+}
+
 async function getUpstreams(router) {
   const snapshot = await gatewayJSON(router, "GET", "/v1/admin/upstreams");
   return snapshot.upstreams || [];
 }
 
 async function putUpstreamList(router, upstreams) {
-  return gatewayJSON(router, "PUT", "/v1/admin/upstreams", upstreams);
+  return gatewayJSON(router, "PUT", "/v1/admin/upstreams", upstreams.map(upstreamForWrite));
 }
 
 async function addOrUpdateNode(req, res, router) {
