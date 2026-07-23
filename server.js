@@ -516,14 +516,24 @@ function markRuntimeCache(snapshot, cachedAt, refreshInFlight) {
   return out;
 }
 
+function runtimeSnapshotCacheable(snapshot) {
+  return !snapshot.gateway?.error || (snapshot.nodes || []).length > 0;
+}
+
 async function refreshRuntimeCache(router) {
   const key = router.id;
   const existing = runtimeCache.get(key);
   if (existing?.promise) return existing.promise;
   const promise = buildRuntimeSnapshot(router)
     .then((snapshot) => {
-      const entry = { snapshot: cloneJSON(snapshot), at: Date.now(), promise: null };
-      runtimeCache.set(key, entry);
+      if (runtimeSnapshotCacheable(snapshot)) {
+        const entry = { snapshot: cloneJSON(snapshot), at: Date.now(), promise: null };
+        runtimeCache.set(key, entry);
+      } else if (existing?.snapshot) {
+        runtimeCache.set(key, { ...existing, promise: null });
+      } else {
+        runtimeCache.delete(key);
+      }
       return snapshot;
     })
     .catch((err) => {
