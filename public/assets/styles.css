@@ -364,6 +364,14 @@ button.switch.disabled {
   white-space: nowrap;
 }
 
+.status-line.warn {
+  color: var(--yellow);
+}
+
+.status-line.err {
+  color: var(--red);
+}
+
 .summary-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -532,6 +540,12 @@ td:nth-child(9) { width: 148px; }
   border-color: color-mix(in srgb, var(--red) 42%, var(--line));
   background: color-mix(in srgb, var(--red) 8%, var(--surface));
   color: var(--red);
+}
+
+.pill.metrics_stale {
+  border-color: color-mix(in srgb, var(--yellow) 48%, var(--line));
+  background: color-mix(in srgb, var(--yellow) 10%, var(--surface));
+  color: var(--yellow);
 }
 
 .pill.disabled {

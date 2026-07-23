@@ -10,7 +10,11 @@ const gatewayToken = process.env.GATEWAY_ADMIN_TOKEN || "";
 const basicUser = process.env.BASIC_AUTH_USER || "";
 const basicPasswordHash = process.env.BASIC_AUTH_PASSWORD_SHA256 || "";
 const timeoutMs = Number(process.env.METRICS_TIMEOUT_MS || "2500");
+const metricsStaleTtlMs = Number(process.env.METRICS_STALE_TTL_MS || "60000");
+const controlStaleTtlMs = Number(process.env.CONTROL_STALE_TTL_MS || "60000");
 const staticRoot = path.join(__dirname, "public");
+const metricsCache = new Map();
+const controlCache = new Map();
 
 function readRoutersConfig() {
   const file = process.env.ROUTERS_FILE || "";
@@ -107,6 +111,23 @@ function publicRouters() {
     default_provider: router.default_provider,
     default_use_shared_bearer: router.default_use_shared_bearer
   }));
+}
+
+function cloneJSON(value) {
+  if (value === null || value === undefined) return value;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function nowISO(time) {
+  return new Date(time).toISOString();
+}
+
+function cacheFresh(entry, ttlMs) {
+  return entry && Number.isFinite(ttlMs) && ttlMs > 0 && Date.now() - entry.at <= ttlMs;
+}
+
+function normalizedBaseURL(baseURL) {
+  return String(baseURL || "").trim().replace(/\/+$/, "");
 }
 
 function selectedRouter(url) {
@@ -290,12 +311,59 @@ function parseCombinedMetrics(text) {
   };
 }
 
+function cacheKey(router, name) {
+  return `${router.id}:${name}`;
+}
+
+function decorateMetrics(metrics, status, sampledAt, sourceError) {
+  const ageSeconds = Math.max(0, Math.round((Date.now() - sampledAt) / 1000));
+  const out = {
+    ...cloneJSON(metrics),
+    freshness: status,
+    stale: status === "stale",
+    sampled_at: nowISO(sampledAt),
+    age_seconds: ageSeconds
+  };
+  if (sourceError) out.source_error = sourceError;
+  for (const section of ["pig", "backend"]) {
+    out[section] = {
+      ...(out[section] || {}),
+      freshness: status,
+      stale: status === "stale",
+      sampled_at: out.sampled_at,
+      age_seconds: ageSeconds
+    };
+    if (sourceError && status === "stale") out[section].source_error = sourceError;
+  }
+  return out;
+}
+
+function metricsUnavailable(message) {
+  return {
+    ok: false,
+    freshness: "error",
+    stale: false,
+    pig: { ok: false, error: message },
+    backend: { ok: false, error: message }
+  };
+}
+
+function staleMetrics(key, message) {
+  const cached = metricsCache.get(key);
+  if (cacheFresh(cached, metricsStaleTtlMs)) {
+    return decorateMetrics(cached.metrics, "stale", cached.at, message);
+  }
+  return metricsUnavailable(message);
+}
+
 async function fetchMetrics(baseURL) {
-  if (!baseURL) {
+  const url = normalizedBaseURL(baseURL);
+  if (!url) {
     return { ok: false, pig: { ok: false, error: "not configured" }, backend: { ok: false, error: "not configured" } };
   }
+  const key = url;
   try {
-    const response = await fetchText(String(baseURL).replace(/\/+$/, "") + "/v1/metrics", {
+    const response = await fetchText(url + "/v1/metrics", {
       headers: {
         Authorization: `Bearer ${gatewayToken}`,
         Accept: "text/plain"
@@ -303,20 +371,15 @@ async function fetchMetrics(baseURL) {
       timeoutMs
     });
     if (!response.ok) {
-      return {
-        ok: false,
-        pig: { ok: false, status: response.status, error: `HTTP ${response.status}` },
-        backend: { ok: false, status: response.status, error: `HTTP ${response.status}` }
-      };
+      return staleMetrics(key, `HTTP ${response.status}`);
     }
-    return parseCombinedMetrics(response.text);
+    const parsed = parseCombinedMetrics(response.text);
+    const sampledAt = Date.now();
+    metricsCache.set(key, { metrics: cloneJSON(parsed), at: sampledAt });
+    return decorateMetrics(parsed, "fresh", sampledAt);
   } catch (err) {
     const message = String(err && err.message ? err.message : err);
-    return {
-      ok: false,
-      pig: { ok: false, error: message },
-      backend: { ok: false, error: message }
-    };
+    return staleMetrics(key, message);
   }
 }
 
@@ -335,9 +398,31 @@ function errorMessage(err) {
   return String(err && err.message ? err.message : err);
 }
 
-function settledSnapshot(result, fallback) {
-  if (result.status === "fulfilled") return result.value;
-  return { ...fallback, error: errorMessage(result.reason) };
+function cachedGatewaySnapshot(router, name, result, fallback) {
+  const key = cacheKey(router, name);
+  if (result.status === "fulfilled") {
+    const value = result.value || fallback;
+    controlCache.set(key, { value: cloneJSON(value), at: Date.now() });
+    return { value, stale: false, warning: "", error: "" };
+  }
+  const message = errorMessage(result.reason);
+  const cached = controlCache.get(key);
+  if (cacheFresh(cached, controlStaleTtlMs)) {
+    const ageSeconds = Math.max(0, Math.round((Date.now() - cached.at) / 1000));
+    return {
+      value: {
+        ...cloneJSON(cached.value),
+        stale: true,
+        sampled_at: nowISO(cached.at),
+        age_seconds: ageSeconds,
+        source_error: message
+      },
+      stale: true,
+      warning: `${name} stale ${ageSeconds}s: ${message}`,
+      error: ""
+    };
+  }
+  return { value: { ...fallback, error: message }, stale: false, warning: "", error: message };
 }
 
 async function runtimeSnapshot(router) {
@@ -346,9 +431,12 @@ async function runtimeSnapshot(router) {
     gatewayJSON(router, "GET", "/v1/admin/router"),
     gatewayJSON(router, "GET", "/v1/models")
   ]);
-  const upstreamsSnapshot = settledSnapshot(upstreamsResult, { upstreams: [] });
-  const routerSnapshot = settledSnapshot(routerResult, { routes: [] });
-  const modelsSnapshot = settledSnapshot(modelsResult, { data: [] });
+  const upstreamsResolved = cachedGatewaySnapshot(router, "upstreams", upstreamsResult, { upstreams: [] });
+  const routerResolved = cachedGatewaySnapshot(router, "router", routerResult, { routes: [] });
+  const modelsResolved = cachedGatewaySnapshot(router, "models", modelsResult, { data: [] });
+  const upstreamsSnapshot = upstreamsResolved.value;
+  const routerSnapshot = routerResolved.value;
+  const modelsSnapshot = modelsResolved.value;
   const upstreams = upstreamsSnapshot.upstreams || [];
   const routes = routerSnapshot.routes || [];
   const nodes = await Promise.all(upstreams.map(async (upstream) => {
@@ -357,7 +445,7 @@ async function runtimeSnapshot(router) {
     const metrics = enabled
       ? await fetchMetrics(upstream.base_url)
       : { ok: false, pig: { ok: false }, backend: { ok: false } };
-    const health = enabled ? (metrics.ok ? "healthy" : "metrics_error") : "disabled";
+    const health = enabled ? (metrics.stale ? "metrics_stale" : (metrics.ok ? "healthy" : "metrics_error")) : "disabled";
     return {
       ...upstream,
       id: upstream.name,
@@ -371,7 +459,9 @@ async function runtimeSnapshot(router) {
       },
       health: {
         status: health,
-        reason: metrics.ok ? "" : (metrics.pig?.error || metrics.backend?.error || "metrics unavailable")
+        reason: metrics.stale
+          ? `showing ${metrics.age_seconds}s old metrics; ${metrics.source_error || "latest metrics unavailable"}`
+          : (metrics.ok ? "" : (metrics.pig?.error || metrics.backend?.error || "metrics unavailable"))
       }
     };
   }));
@@ -386,8 +476,11 @@ async function runtimeSnapshot(router) {
     processed: routes.reduce((sum, route) => sum + numberOrZero(route.processed), 0),
     cache_selected: routes.reduce((sum, route) => sum + numberOrZero(route.selected_by_cache), 0),
     load_selected: routes.reduce((sum, route) => sum + numberOrZero(route.selected_by_load), 0),
-    order_selected: routes.reduce((sum, route) => sum + numberOrZero(route.selected_by_order), 0)
+    order_selected: routes.reduce((sum, route) => sum + numberOrZero(route.selected_by_order), 0),
+    stale_nodes: nodes.filter((node) => node.health?.status === "metrics_stale").length
   };
+  const warnings = [upstreamsResolved, routerResolved, modelsResolved].map((item) => item.warning).filter(Boolean);
+  const errors = [upstreamsResolved, routerResolved, modelsResolved].map((item) => item.error).filter(Boolean);
   return {
     generated_at: new Date().toISOString(),
     selected_router: publicRouters().find((item) => item.id === router.id),
@@ -397,7 +490,9 @@ async function runtimeSnapshot(router) {
       config_path: upstreamsSnapshot.config_path,
       config_digest: upstreamsSnapshot.config_digest,
       router_digest: routerSnapshot.upstream_config_digest,
-      error: upstreamsSnapshot.error || routerSnapshot.error || modelsSnapshot.error || null
+      stale: warnings.length > 0,
+      warning: warnings.join("; ") || null,
+      error: errors.join("; ") || null
     },
     router: routerSnapshot,
     models: modelsSnapshot,

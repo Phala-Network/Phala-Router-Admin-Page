@@ -180,6 +180,7 @@ function renderSummary(summary) {
     { label: "PIG run", value: summary.pig_running, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "green" },
     { label: "backend run", value: summary.backend_running, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "green" },
     { label: "waiting", value: summary.waiting, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "neutral" },
+    { label: "stale", value: summary.stale_nodes, tone: Number(summary.stale_nodes || 0) > 0 ? "yellow" : "neutral" },
     { label: "cache", value: summary.cache_selected, tone: Number(summary.cache_selected || 0) > 0 ? "blue" : "neutral" },
     { label: "load", value: summary.load_selected, tone: Number(summary.load_selected || 0) > 0 ? "yellow" : "neutral" }
   ];
@@ -364,6 +365,7 @@ function summaryStats(summary) {
     { label: "PIG", value: summary.pig_running, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "green" },
     { label: "backend", value: summary.backend_running, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "green" },
     { label: "waiting", value: summary.waiting, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "neutral" },
+    { label: "stale", value: summary.stale_nodes, tone: Number(summary.stale_nodes || 0) > 0 ? "yellow" : "neutral" },
     { label: "cache", value: summary.cache_selected, tone: "blue" },
     { label: "load", value: summary.load_selected, tone: "yellow" }
   ];
@@ -1345,6 +1347,7 @@ async function refresh() {
     const snapshot = await api("/api/runtime");
     render(snapshot);
     if (snapshot.gateway?.error) log(snapshot.gateway.error, "err");
+    else if (snapshot.gateway?.warning) log(snapshot.gateway.warning, "warn");
     else log("");
   } catch (err) {
     log(err.message, "err");
