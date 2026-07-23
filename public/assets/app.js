@@ -22,6 +22,12 @@ const $ = (id) => document.getElementById(id);
 const THEMES = new Set(["phala-terminal", "vast-console", "clean-ops", "signal-board", "mesh-topology"]);
 const TOPOLOGY_ZOOM_PADDING = 135;
 const TOPOLOGY_UPSTREAM_MIN_DISTANCE = 255;
+const TOPOLOGY_LAYOUT_SINGLE_X = 330;
+const TOPOLOGY_LAYOUT_PAIR_X = 330;
+const TOPOLOGY_LAYOUT_SIDE_BASE_X = 445;
+const TOPOLOGY_LAYOUT_SIDE_X_STEP = 72;
+const TOPOLOGY_LAYOUT_SIDE_MIN_Y_STEP = 172;
+const TOPOLOGY_LAYOUT_SIDE_MAX_Y_STEP = 205;
 const TOPOLOGY_NETWORK_MIN_POINTS = 72;
 const TOPOLOGY_NETWORK_MAX_POINTS = 118;
 const TOPOLOGY_NETWORK_POINT_LINK_DISTANCE = 126;
@@ -607,6 +613,24 @@ function topologyCoreGapForce(minRadius) {
   return force;
 }
 
+function topologyLayoutBiasForce() {
+  let graphNodes = [];
+  function force(alpha) {
+    graphNodes.forEach((node) => {
+      if (node.type !== "upstream" || topologyPinnedNodes.has(node.id)) return;
+      if (!Number.isFinite(node.layoutX) || !Number.isFinite(node.layoutY)) return;
+      const x = Number.isFinite(node.x) ? node.x : node.layoutX;
+      const y = Number.isFinite(node.y) ? node.y : node.layoutY;
+      node.vx = (node.vx || 0) + (node.layoutX - x) * alpha * 0.055;
+      node.vy = (node.vy || 0) + (node.layoutY - y) * alpha * 0.25;
+    });
+  }
+  force.initialize = (nodes) => {
+    graphNodes = nodes || [];
+  };
+  return force;
+}
+
 function rememberTopologyPositions() {
   if (!topologyGraph) return;
   const graphData = topologyGraph.graphData();
@@ -616,14 +640,31 @@ function rememberTopologyPositions() {
   });
 }
 
+function topologySideFanPosition(side, localIndex, sideCount) {
+  const sign = side === "left" ? -1 : 1;
+  if (sideCount <= 1) return { x: sign * TOPOLOGY_LAYOUT_SIDE_BASE_X, y: 0 };
+  const yStep = Math.max(
+    TOPOLOGY_LAYOUT_SIDE_MIN_Y_STEP,
+    TOPOLOGY_LAYOUT_SIDE_MAX_Y_STEP - Math.max(0, sideCount - 2) * 9
+  );
+  const center = (sideCount - 1) / 2;
+  const offset = localIndex - center;
+  const absOffset = Math.abs(offset);
+  const x = sign * (TOPOLOGY_LAYOUT_SIDE_BASE_X + absOffset * TOPOLOGY_LAYOUT_SIDE_X_STEP);
+  return {
+    x,
+    y: offset * yStep
+  };
+}
+
 function initialTopologyPosition(index, total) {
   const count = Math.max(1, total);
-  const angle = count === 1 ? -Math.PI / 5 : -Math.PI / 2 + (index / count) * Math.PI * 2;
-  const radius = count === 1 ? 310 : count <= 4 ? 260 : 305;
-  return {
-    x: Math.cos(angle) * radius,
-    y: Math.sin(angle) * radius
-  };
+  if (count === 1) return { x: TOPOLOGY_LAYOUT_SINGLE_X, y: 0 };
+  if (count === 2) return { x: index === 0 ? -TOPOLOGY_LAYOUT_PAIR_X : TOPOLOGY_LAYOUT_PAIR_X, y: 0 };
+  const leftCount = Math.floor(count / 2);
+  const rightCount = count - leftCount;
+  if (index < leftCount) return topologySideFanPosition("left", index, leftCount);
+  return topologySideFanPosition("right", index - leftCount, rightCount);
 }
 
 function usableSavedTopologyPosition(saved) {
@@ -664,6 +705,8 @@ function buildTopologyGraph(snapshot) {
       enabled: node.enabled,
       raw: node,
       metrics,
+      layoutX: initial.x,
+      layoutY: initial.y,
       x: useSaved ? saved.x : initial.x,
       y: useSaved ? saved.y : initial.y,
       fx: pinned && useSaved ? saved.fx ?? saved.x : singleUpstream ? initial.x : undefined,
@@ -690,17 +733,6 @@ function buildTopologyGraph(snapshot) {
         waiting: metrics.waiting
       });
     }
-  });
-
-  const activeNames = upstreams.filter((node) => node.enabled).map((node) => node.name);
-  activeNames.forEach((name, index) => {
-    if (activeNames.length < 3) return;
-    graphLinks.push({
-      source: name,
-      target: activeNames[(index + 1) % activeNames.length],
-      kind: "mesh",
-      tone: "blue"
-    });
   });
 
   return { nodes: graphNodes, links: graphLinks };
@@ -737,6 +769,8 @@ function updateExistingTopologyGraph(nextData) {
     currentNode.enabled = nextNode.enabled;
     currentNode.raw = nextNode.raw;
     currentNode.metrics = nextNode.metrics;
+    currentNode.layoutX = nextNode.layoutX;
+    currentNode.layoutY = nextNode.layoutY;
     if (topologyPositionTooCloseToCore(currentNode)) {
       currentNode.x = nextNode.x;
       currentNode.y = nextNode.y;
@@ -1230,10 +1264,11 @@ function ensureTopologyGraph() {
 
   topologyGraph.d3Force("charge").strength(-390);
   topologyGraph.d3Force("link")
-    .distance((link) => link.kind === "mesh" ? 250 : 295)
-    .strength((link) => link.kind === "mesh" ? 0.014 : link.direction === "upstream_to_core" ? 0 : 0.07);
+    .distance((link) => link.kind === "mesh" ? 235 : 280)
+    .strength((link) => link.kind === "mesh" ? 0.01 : link.direction === "upstream_to_core" ? 0 : 0.035);
   topologyGraph.d3Force("center").strength(0.04);
   topologyGraph.d3Force("core-gap", topologyCoreGapForce(255));
+  topologyGraph.d3Force("layout-bias", topologyLayoutBiasForce());
 
   if (window.ResizeObserver) {
     topologyResizeObserver = new ResizeObserver(resizeTopologyGraph);
