@@ -14,7 +14,7 @@ let topologyNetworkLastSize = "";
 let topologyNetworkPoints = [];
 let topologyNetworkRipples = [];
 let topologyNetworkPointer = { x: -10000, y: -10000, active: false };
-let topologyNetworkLastScatter = { x: -10000, y: -10000, at: 0 };
+let topologyNetworkAnchorState = { x: 0, y: 0, targetX: 0, targetY: 0, initialized: false, active: false, lastWakeAt: 0 };
 let topologyParticlesLayer = null;
 let topologyResizeObserver = null;
 let topologyNodePositions = new Map();
@@ -30,9 +30,10 @@ const TOPOLOGY_NETWORK_MIN_POINTS = 42;
 const TOPOLOGY_NETWORK_MAX_POINTS = 58;
 const TOPOLOGY_NETWORK_PATH_LINK_DISTANCE = 38;
 const TOPOLOGY_NETWORK_MOUSE_DISTANCE = 69;
-const TOPOLOGY_NETWORK_SCATTER_DISTANCE = 30;
-const TOPOLOGY_NETWORK_SCATTER_COOLDOWN_MS = 180;
-const TOPOLOGY_NETWORK_SETTLE_MS = 9200;
+const TOPOLOGY_NETWORK_WAKE_DISTANCE = 128;
+const TOPOLOGY_NETWORK_WAKE_COOLDOWN_MS = 720;
+const TOPOLOGY_NETWORK_ANCHOR_EASE = 0.095;
+const TOPOLOGY_NETWORK_SETTLE_MS = 7800;
 
 function preferredTheme() {
   const saved = localStorage.getItem("phala-router-admin-theme");
@@ -760,9 +761,27 @@ function topologyNetworkPointCount(width, height) {
 function topologyNetworkAnchor(width, height) {
   const fallback = { x: width / 2, y: height / 2 };
   const raw = topologyNetworkPointer.active ? topologyNetworkPointer : fallback;
+  const targetX = Math.max(96, Math.min(width - 96, raw.x));
+  const targetY = Math.max(96, Math.min(height - 96, raw.y));
+  if (!topologyNetworkAnchorState.initialized) {
+    topologyNetworkAnchorState = {
+      x: targetX,
+      y: targetY,
+      targetX,
+      targetY,
+      initialized: true,
+      active: topologyNetworkPointer.active,
+      lastWakeAt: 0
+    };
+  }
+  topologyNetworkAnchorState.targetX = targetX;
+  topologyNetworkAnchorState.targetY = targetY;
+  topologyNetworkAnchorState.active = topologyNetworkPointer.active;
+  topologyNetworkAnchorState.x += (targetX - topologyNetworkAnchorState.x) * TOPOLOGY_NETWORK_ANCHOR_EASE;
+  topologyNetworkAnchorState.y += (targetY - topologyNetworkAnchorState.y) * TOPOLOGY_NETWORK_ANCHOR_EASE;
   return {
-    x: Math.max(96, Math.min(width - 96, raw.x)),
-    y: Math.max(96, Math.min(height - 96, raw.y)),
+    x: Math.max(96, Math.min(width - 96, topologyNetworkAnchorState.x)),
+    y: Math.max(96, Math.min(height - 96, topologyNetworkAnchorState.y)),
     active: topologyNetworkPointer.active
   };
 }
@@ -887,7 +906,7 @@ function retargetTopologyNetworkPoints(width, height) {
   });
 }
 
-function scatterTopologyNetworkPoints(anchor) {
+function wakeTopologyNetworkPoints(anchor) {
   if (!topologyNetworkPoints.length) return;
   const now = performance.now();
   topologyNetworkPoints.forEach((point, index) => {
@@ -895,26 +914,25 @@ function scatterTopologyNetworkPoints(anchor) {
     const dy = point.y - anchor.y;
     const distance = Math.hypot(dx, dy);
     const angle = distance > 1 ? Math.atan2(dy, dx) : Math.random() * Math.PI * 2;
-    const swirl = (Math.random() - 0.5) * 1.4;
-    const scatterAngle = angle + swirl;
-    const burst = 0.9 + Math.random() * 1.6;
-    const offset = 8 + Math.random() * 22;
-    point.x += Math.cos(scatterAngle) * offset + (Math.random() - 0.5) * 10;
-    point.y += Math.sin(scatterAngle) * offset + (Math.random() - 0.5) * 10;
-    point.vx += Math.cos(scatterAngle) * burst + (Math.random() - 0.5) * 0.7;
-    point.vy += Math.sin(scatterAngle) * burst + (Math.random() - 0.5) * 0.7;
-    point.startedAt = now + index * 42;
-    point.scatterUntil = now + 420;
+    const tangent = angle + Math.PI / 2 + (Math.random() - 0.5) * 0.7;
+    const outward = 0.18 + Math.random() * 0.26;
+    const swirl = 0.22 + Math.random() * 0.34;
+    point.vx += Math.cos(angle) * outward + Math.cos(tangent) * swirl;
+    point.vy += Math.sin(angle) * outward + Math.sin(tangent) * swirl;
+    point.startedAt = now + index * 30;
+    point.scatterUntil = now + 220;
   });
 }
 
-function maybeScatterTopologyNetwork(point) {
+function maybeWakeTopologyNetwork(point) {
   const now = performance.now();
-  const moved = Math.hypot(point.x - topologyNetworkLastScatter.x, point.y - topologyNetworkLastScatter.y);
-  const enoughTime = now - topologyNetworkLastScatter.at > TOPOLOGY_NETWORK_SCATTER_COOLDOWN_MS;
-  if (!topologyNetworkLastScatter.at || (moved >= TOPOLOGY_NETWORK_SCATTER_DISTANCE && enoughTime)) {
-    topologyNetworkLastScatter = { x: point.x, y: point.y, at: now };
-    scatterTopologyNetworkPoints(point);
+  if (!topologyNetworkAnchorState.initialized) return;
+  const targetMoved = Math.hypot(point.x - topologyNetworkAnchorState.targetX, point.y - topologyNetworkAnchorState.targetY);
+  const anchorLag = Math.hypot(point.x - topologyNetworkAnchorState.x, point.y - topologyNetworkAnchorState.y);
+  const enoughTime = now - topologyNetworkAnchorState.lastWakeAt > TOPOLOGY_NETWORK_WAKE_COOLDOWN_MS;
+  if ((targetMoved >= TOPOLOGY_NETWORK_WAKE_DISTANCE || anchorLag >= TOPOLOGY_NETWORK_WAKE_DISTANCE) && enoughTime) {
+    topologyNetworkAnchorState.lastWakeAt = now;
+    wakeTopologyNetworkPoints({ x: topologyNetworkAnchorState.x, y: topologyNetworkAnchorState.y });
   }
 }
 
@@ -1362,7 +1380,7 @@ function updateTopologyCursor(event) {
   canvas.style.setProperty("--cursor-x", `${point.x}px`);
   canvas.style.setProperty("--cursor-y", `${point.y}px`);
   topologyNetworkPointer = { x: point.x, y: point.y, active: true };
-  maybeScatterTopologyNetwork(point);
+  maybeWakeTopologyNetwork(point);
   startTopologyNetworkAnimation();
   const now = performance.now();
   if (now - topologyLastParticleAt < 28) return;
@@ -1383,7 +1401,8 @@ function updateTopologyCursor(event) {
 
 function leaveTopologyCursor() {
   topologyNetworkPointer.active = false;
-  topologyNetworkLastScatter = { x: -10000, y: -10000, at: 0 };
+  topologyNetworkAnchorState.active = false;
+  topologyNetworkAnchorState.lastWakeAt = 0;
   const canvas = $("topology");
   canvas.style.setProperty("--cursor-x", "-100px");
   canvas.style.setProperty("--cursor-y", "-100px");
