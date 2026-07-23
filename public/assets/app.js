@@ -14,6 +14,7 @@ let topologyNetworkLastSize = "";
 let topologyNetworkPoints = [];
 let topologyNetworkRipples = [];
 let topologyNetworkPointer = { x: -10000, y: -10000, active: false };
+let topologyNetworkLastScatter = { x: -10000, y: -10000, at: 0 };
 let topologyParticlesLayer = null;
 let topologyResizeObserver = null;
 let topologyNodePositions = new Map();
@@ -29,6 +30,9 @@ const TOPOLOGY_NETWORK_MIN_POINTS = 42;
 const TOPOLOGY_NETWORK_MAX_POINTS = 58;
 const TOPOLOGY_NETWORK_PATH_LINK_DISTANCE = 38;
 const TOPOLOGY_NETWORK_MOUSE_DISTANCE = 69;
+const TOPOLOGY_NETWORK_SCATTER_DISTANCE = 30;
+const TOPOLOGY_NETWORK_SCATTER_COOLDOWN_MS = 180;
+const TOPOLOGY_NETWORK_SETTLE_MS = 9200;
 
 function preferredTheme() {
   const saved = localStorage.getItem("phala-router-admin-theme");
@@ -883,6 +887,37 @@ function retargetTopologyNetworkPoints(width, height) {
   });
 }
 
+function scatterTopologyNetworkPoints(anchor) {
+  if (!topologyNetworkPoints.length) return;
+  const now = performance.now();
+  topologyNetworkPoints.forEach((point, index) => {
+    const dx = point.x - anchor.x;
+    const dy = point.y - anchor.y;
+    const distance = Math.hypot(dx, dy);
+    const angle = distance > 1 ? Math.atan2(dy, dx) : Math.random() * Math.PI * 2;
+    const swirl = (Math.random() - 0.5) * 1.4;
+    const scatterAngle = angle + swirl;
+    const burst = 0.9 + Math.random() * 1.6;
+    const offset = 8 + Math.random() * 22;
+    point.x += Math.cos(scatterAngle) * offset + (Math.random() - 0.5) * 10;
+    point.y += Math.sin(scatterAngle) * offset + (Math.random() - 0.5) * 10;
+    point.vx += Math.cos(scatterAngle) * burst + (Math.random() - 0.5) * 0.7;
+    point.vy += Math.sin(scatterAngle) * burst + (Math.random() - 0.5) * 0.7;
+    point.startedAt = now + index * 42;
+    point.scatterUntil = now + 420;
+  });
+}
+
+function maybeScatterTopologyNetwork(point) {
+  const now = performance.now();
+  const moved = Math.hypot(point.x - topologyNetworkLastScatter.x, point.y - topologyNetworkLastScatter.y);
+  const enoughTime = now - topologyNetworkLastScatter.at > TOPOLOGY_NETWORK_SCATTER_COOLDOWN_MS;
+  if (!topologyNetworkLastScatter.at || (moved >= TOPOLOGY_NETWORK_SCATTER_DISTANCE && enoughTime)) {
+    topologyNetworkLastScatter = { x: point.x, y: point.y, at: now };
+    scatterTopologyNetworkPoints(point);
+  }
+}
+
 function syncTopologyNetworkCanvas() {
   if (!topologyNetworkCanvas) return null;
   const host = $("topology");
@@ -912,13 +947,13 @@ function syncTopologyNetworkCanvas() {
 function updateTopologyNetworkPoint(point, width, height) {
   const now = performance.now();
   const age = Math.max(0, now - (point.startedAt || now));
-  const settle = Math.min(1, age / 5200);
+  const settle = Math.min(1, age / TOPOLOGY_NETWORK_SETTLE_MS);
   const breathe = Math.sin(now / 1200 + point.phase) * 1.15;
   const targetX = point.targetX + breathe * 0.45;
   const targetY = point.targetY + breathe;
   const dxTarget = targetX - point.x;
   const dyTarget = targetY - point.y;
-  const spring = 0.0038 + settle * 0.017;
+  const spring = 0.00065 + settle * 0.0048;
   point.vx += dxTarget * spring;
   point.vy += dyTarget * spring;
 
@@ -932,10 +967,16 @@ function updateTopologyNetworkPoint(point, width, height) {
       point.vy += (dx / distance) * wake;
     }
   }
+  const speed = Math.hypot(point.vx, point.vy);
+  const maxSpeed = now < (point.scatterUntil || 0) ? 2.2 : 0.16 + settle * 0.52;
+  if (speed > maxSpeed) {
+    point.vx = (point.vx / speed) * maxSpeed;
+    point.vy = (point.vy / speed) * maxSpeed;
+  }
   point.x += point.vx;
   point.y += point.vy;
-  point.vx *= 0.86;
-  point.vy *= 0.86;
+  point.vx *= 0.94;
+  point.vy *= 0.94;
   if (point.x < 18 || point.x > width - 18) {
     point.vx *= -1;
     point.x = Math.max(18, Math.min(width - 18, point.x));
@@ -960,6 +1001,11 @@ function drawTopologyNetworkLine(ctx, a, b, maxDistance, baseAlpha, color) {
   ctx.stroke();
 }
 
+function topologyNetworkSettleRatio(point) {
+  const age = Math.max(0, performance.now() - (point.startedAt || 0));
+  return Math.min(1, age / TOPOLOGY_NETWORK_SETTLE_MS);
+}
+
 function drawTopologyPShapePath(ctx, points, primary, blue) {
   if (points.length < 4) return;
   const bySection = points.reduce((out, point) => {
@@ -971,7 +1017,8 @@ function drawTopologyPShapePath(ctx, points, primary, blue) {
     const sectionPoints = bySection[section] || [];
     for (let i = 0; i < sectionPoints.length - 1; i += 1) {
       const color = section === "curve" ? blue : primary;
-      const alpha = section === "curve" ? 0.22 : 0.24;
+      const readiness = Math.min(topologyNetworkSettleRatio(sectionPoints[i]), topologyNetworkSettleRatio(sectionPoints[i + 1]));
+      const alpha = (section === "curve" ? 0.22 : 0.24) * readiness;
       drawTopologyNetworkLine(ctx, sectionPoints[i], sectionPoints[i + 1], TOPOLOGY_NETWORK_PATH_LINK_DISTANCE, alpha, color);
     }
   });
@@ -982,10 +1029,10 @@ function drawTopologyPShapePath(ctx, points, primary, blue) {
   const mid = bySection.mid || [];
   const stemCount = stem.length;
   const stemMid = Math.min(stemCount - 1, Math.max(0, Math.round((stemCount - 1) * 0.47)));
-  if (stem[0] && top[0]) drawTopologyNetworkLine(ctx, stem[0], top[0], TOPOLOGY_NETWORK_PATH_LINK_DISTANCE, 0.24, primary);
-  if (top.at(-1) && curve[0]) drawTopologyNetworkLine(ctx, top.at(-1), curve[0], TOPOLOGY_NETWORK_PATH_LINK_DISTANCE, 0.22, blue);
-  if (curve.at(-1) && mid[0]) drawTopologyNetworkLine(ctx, curve.at(-1), mid[0], TOPOLOGY_NETWORK_PATH_LINK_DISTANCE, 0.22, blue);
-  if (mid.at(-1) && stem[stemMid]) drawTopologyNetworkLine(ctx, mid.at(-1), stem[stemMid], TOPOLOGY_NETWORK_PATH_LINK_DISTANCE, 0.24, primary);
+  if (stem[0] && top[0]) drawTopologyNetworkLine(ctx, stem[0], top[0], TOPOLOGY_NETWORK_PATH_LINK_DISTANCE, 0.24 * Math.min(topologyNetworkSettleRatio(stem[0]), topologyNetworkSettleRatio(top[0])), primary);
+  if (top.at(-1) && curve[0]) drawTopologyNetworkLine(ctx, top.at(-1), curve[0], TOPOLOGY_NETWORK_PATH_LINK_DISTANCE, 0.22 * Math.min(topologyNetworkSettleRatio(top.at(-1)), topologyNetworkSettleRatio(curve[0])), blue);
+  if (curve.at(-1) && mid[0]) drawTopologyNetworkLine(ctx, curve.at(-1), mid[0], TOPOLOGY_NETWORK_PATH_LINK_DISTANCE, 0.22 * Math.min(topologyNetworkSettleRatio(curve.at(-1)), topologyNetworkSettleRatio(mid[0])), blue);
+  if (mid.at(-1) && stem[stemMid]) drawTopologyNetworkLine(ctx, mid.at(-1), stem[stemMid], TOPOLOGY_NETWORK_PATH_LINK_DISTANCE, 0.24 * Math.min(topologyNetworkSettleRatio(mid.at(-1)), topologyNetworkSettleRatio(stem[stemMid])), primary);
 }
 
 function drawTopologyNetworkFrame() {
@@ -1315,6 +1362,7 @@ function updateTopologyCursor(event) {
   canvas.style.setProperty("--cursor-x", `${point.x}px`);
   canvas.style.setProperty("--cursor-y", `${point.y}px`);
   topologyNetworkPointer = { x: point.x, y: point.y, active: true };
+  maybeScatterTopologyNetwork(point);
   startTopologyNetworkAnimation();
   const now = performance.now();
   if (now - topologyLastParticleAt < 28) return;
@@ -1335,6 +1383,7 @@ function updateTopologyCursor(event) {
 
 function leaveTopologyCursor() {
   topologyNetworkPointer.active = false;
+  topologyNetworkLastScatter = { x: -10000, y: -10000, at: 0 };
   const canvas = $("topology");
   canvas.style.setProperty("--cursor-x", "-100px");
   canvas.style.setProperty("--cursor-y", "-100px");
