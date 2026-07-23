@@ -773,54 +773,6 @@ td:nth-child(9) { width: 148px; }
   cursor: grabbing;
 }
 
-.topology-cursor-orb,
-.topology-particles,
-.topology-cursor-particle {
-  pointer-events: none;
-}
-
-.topology-cursor-orb {
-  position: absolute;
-  z-index: 5;
-  left: var(--cursor-x, -100px);
-  top: var(--cursor-y, -100px);
-  width: 22px;
-  height: 22px;
-  transform: translate(-50%, -50%);
-  border: 1px solid color-mix(in srgb, var(--primary) 70%, transparent);
-  border-radius: 50%;
-  background: radial-gradient(circle, color-mix(in srgb, var(--primary) 50%, transparent), transparent 68%);
-  box-shadow: 0 0 18px color-mix(in srgb, var(--primary) 58%, transparent);
-}
-
-.topology-particles {
-  position: absolute;
-  z-index: 4;
-  inset: 0;
-}
-
-.topology-cursor-particle {
-  position: absolute;
-  width: 7px;
-  height: 7px;
-  margin: -3px 0 0 -3px;
-  border-radius: 50%;
-  background: var(--primary);
-  box-shadow: 0 0 14px color-mix(in srgb, var(--primary) 76%, transparent);
-  animation: topology-particle 820ms ease-out forwards;
-}
-
-@keyframes topology-particle {
-  from {
-    opacity: 0.9;
-    transform: translate(0, 0) scale(1);
-  }
-  to {
-    opacity: 0;
-    transform: translate(var(--drift-x), var(--drift-y)) scale(0.2);
-  }
-}
-
 .topology-hint {
   position: absolute;
   z-index: 5;
