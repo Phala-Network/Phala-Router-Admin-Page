@@ -1262,6 +1262,17 @@ function loadNode(node) {
   selectedId = node.name || "";
 }
 
+function newNode() {
+  selectedId = "";
+  $("node-name").value = "";
+  $("base-url").value = "";
+  $("path").value = "/v1/chat/completions";
+  applyRouterDefaults();
+  log("");
+  setEditorOpen(true);
+  $("node-name").focus();
+}
+
 async function saveForm() {
   try {
     const body = {
@@ -1352,6 +1363,7 @@ $("theme-select").addEventListener("change", (event) => {
   applyTheme(event.target.value);
 });
 
+$("new-node-btn").addEventListener("click", newNode);
 $("refresh-btn").addEventListener("click", refresh);
 $("save-btn").addEventListener("click", saveForm);
 $("load-btn").addEventListener("click", loadSelected);
