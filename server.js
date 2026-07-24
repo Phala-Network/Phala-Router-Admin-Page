@@ -132,6 +132,11 @@ function normalizedBaseURL(baseURL) {
   return String(baseURL || "").trim().replace(/\/+$/, "");
 }
 
+function sharedBearerToken() {
+  if (!gatewayToken) throw new Error("gateway admin token is not configured");
+  return gatewayToken;
+}
+
 function selectedRouter(url) {
   if (routers.length === 0) throw new Error("no routers configured");
   const id = url.searchParams.get("router") || routers[0].id;
@@ -573,7 +578,7 @@ function normalizeNode(input, router) {
     provider: String(input.provider || router.default_provider || "phala-direct").trim(),
     base_url: baseURL,
     models: { [publicModel]: upstreamModel },
-    bearer_token: input.use_shared_bearer === false ? undefined : "${TOKEN}",
+    bearer_token: input.use_shared_bearer === false ? undefined : sharedBearerToken(),
     path: String(input.path || "/v1/chat/completions").trim(),
     connect_timeout_seconds: 10,
     read_timeout_seconds: 1800,
@@ -616,10 +621,12 @@ function upstreamForWrite(input) {
     copyIfPresent(input, out, key);
   }
 
-  if (typeof input.bearer_token === "string" && input.bearer_token) {
+  if (input.bearer_token === "${TOKEN}") {
+    out.bearer_token = sharedBearerToken();
+  } else if (typeof input.bearer_token === "string" && input.bearer_token) {
     out.bearer_token = input.bearer_token;
   } else if (input.use_shared_bearer === true || input.bearer_token_configured === true) {
-    out.bearer_token = "${TOKEN}";
+    out.bearer_token = sharedBearerToken();
   }
 
   return out;
