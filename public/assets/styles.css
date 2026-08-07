@@ -536,7 +536,8 @@ td:nth-child(9) { width: 148px; }
   color: var(--primary);
 }
 
-.pill.metrics_error {
+.pill.metrics_error,
+.pill.pressure {
   border-color: color-mix(in srgb, var(--red) 42%, var(--line));
   background: color-mix(in srgb, var(--red) 8%, var(--surface));
   color: var(--red);
@@ -577,6 +578,31 @@ td:nth-child(9) { width: 148px; }
   background: color-mix(in srgb, var(--red) 16%, var(--surface));
   color: var(--red);
   border: 1px solid color-mix(in srgb, var(--red) 44%, var(--line));
+}
+
+.meter-chip.healthy {
+  background: color-mix(in srgb, var(--primary) 12%, var(--surface));
+  color: var(--primary);
+  border: 1px solid color-mix(in srgb, var(--primary) 42%, var(--line));
+}
+
+.meter-chip.metrics_error {
+  background: color-mix(in srgb, var(--red) 16%, var(--surface));
+  color: var(--red);
+  border: 1px solid color-mix(in srgb, var(--red) 44%, var(--line));
+}
+
+.meter-chip.metrics_stale {
+  background: color-mix(in srgb, var(--yellow) 14%, var(--surface));
+  color: var(--yellow);
+  border: 1px solid color-mix(in srgb, var(--yellow) 44%, var(--line));
+}
+
+.meter-chip.disabled,
+.meter-chip.neutral {
+  background: var(--surface-3);
+  color: var(--muted-strong);
+  border: 1px solid var(--line);
 }
 
 .metric-subline {

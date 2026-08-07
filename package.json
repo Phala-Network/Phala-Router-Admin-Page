@@ -1,12 +1,13 @@
 {
   "name": "phala-router-admin-page",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Small authenticated admin page for Phala router upstream management.",
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js"
+    "check": "node --check server.js && node --check capacity.js && node --check public/assets/app.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=22"

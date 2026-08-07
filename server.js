@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
+const { buildCapacityView, mergeRouterPigMetrics } = require("./capacity");
 
 const port = Number(process.env.PORT || "8080");
 const gatewayToken = process.env.GATEWAY_ADMIN_TOKEN || "";
@@ -287,27 +288,48 @@ function maxMetric(samples, names) {
 
 function parseCombinedMetrics(text) {
   const samples = parsePrometheus(text);
+  const pigRawRunning = firstMetric(samples, "pig_dynamic_observed_running_raw");
+  const pigRawWaiting = firstMetric(samples, "pig_dynamic_observed_waiting_raw");
   const pigRunning = firstMetric(samples, "pig_dynamic_observed_running");
   const pigWaiting = firstMetric(samples, "pig_dynamic_observed_waiting");
+  const rawGlobalLimit = firstMetric(samples, "pig_dynamic_global_limit_raw");
   const globalLimit = firstMetric(samples, "pig_dynamic_global_limit");
+  const predictiveAdmissionEnforce = firstMetric(samples, "pig_predictive_admission_enforce");
+  const routerBackpressureActive = firstMetric(samples, "pig_dynamic_router_backpressure_active")
+    ?? firstMetric(samples, "pig_predictive_router_backpressure_active");
+  const routerBackpressureApplied = firstMetric(samples, "pig_dynamic_router_backpressure_applied")
+    ?? firstMetric(samples, "pig_predictive_router_backpressure_applied");
+  const routerInspectCapacity = firstMetric(samples, "pig_predictive_router_inspect_capacity");
   const basicLimit = firstMetric(samples, "pig_tier_basic_limit");
   const basicInflight = firstMetric(samples, "pig_tier_inflight", "tier", "basic");
   const premiumInflight = firstMetric(samples, "pig_tier_inflight", "tier", "premium");
   const backendRunning = sumMetric(samples, "vllm:num_requests_running") ?? maxMetric(samples, ["sglang:num_running_reqs"]);
   const backendWaiting = sumMetric(samples, "vllm:num_requests_waiting") ?? maxMetric(samples, ["sglang:num_queue_reqs"]);
   const kvUsage = maxMetric(samples, ["vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc", "sglang:token_usage"]);
+  const requestAware = predictiveAdmissionEnforce !== null && predictiveAdmissionEnforce >= 0.5;
+  const legacyGlobalFull = !requestAware
+    && globalLimit !== null
+    && pigRunning !== null
+    && pigRunning >= globalLimit;
   return {
     ok: true,
     pig: {
       ok: true,
       running: pigRunning,
       waiting: pigWaiting,
+      raw_running: pigRawRunning,
+      raw_waiting: pigRawWaiting,
       global_limit: globalLimit,
+      raw_global_limit: rawGlobalLimit,
       basic_limit: basicLimit,
       basic_inflight: basicInflight,
       premium_inflight: premiumInflight,
-      full_basic: pigWaiting > 0 || (globalLimit !== null && pigRunning !== null && pigRunning >= globalLimit) || (basicLimit !== null && basicInflight !== null && basicInflight >= basicLimit),
-      full_premium: pigWaiting > 0 || (globalLimit !== null && pigRunning !== null && pigRunning >= globalLimit)
+      predictive_admission_enforce: requestAware,
+      router_backpressure_active: routerBackpressureActive === null ? null : routerBackpressureActive >= 0.5,
+      router_backpressure_applied: routerBackpressureApplied === null ? null : routerBackpressureApplied >= 0.5,
+      router_inspect_capacity: routerInspectCapacity,
+      full_basic: pigWaiting > 0 || legacyGlobalFull || (basicLimit !== null && basicInflight !== null && basicInflight >= basicLimit),
+      full_premium: pigWaiting > 0 || legacyGlobalFull
     },
     backend: {
       ok: backendRunning !== null || backendWaiting !== null || kvUsage !== null,
@@ -449,10 +471,12 @@ async function buildRuntimeSnapshot(router) {
   const nodes = await Promise.all(upstreams.map(async (upstream) => {
     const enabled = upstream.enabled !== false;
     const route = routeFor(upstream, routes);
-    const metrics = enabled
+    const directMetrics = enabled
       ? await fetchMetrics(upstream.base_url)
       : { ok: false, pig: { ok: false }, backend: { ok: false } };
-    const health = enabled ? (metrics.stale ? "metrics_stale" : (metrics.ok ? "healthy" : "metrics_error")) : "disabled";
+    const pig = mergeRouterPigMetrics(directMetrics.pig || {}, route || {});
+    const health = enabled ? (pig.stale ? "metrics_stale" : (pig.ok ? "healthy" : "metrics_error")) : "disabled";
+    const capacity = buildCapacityView({ enabled, metricsStatus: health, route: route || {}, pig });
     return {
       ...upstream,
       id: upstream.name,
@@ -461,20 +485,25 @@ async function buildRuntimeSnapshot(router) {
       route,
       runtime: {
         router: route || {},
-        pig: metrics.pig || {},
-        backend: metrics.backend || {}
+        pig,
+        backend: directMetrics.backend || {},
+        capacity
       },
       health: {
         status: health,
-        reason: metrics.stale
-          ? `showing ${metrics.age_seconds}s old metrics; ${metrics.source_error || "latest metrics unavailable"}`
-          : (metrics.ok ? "" : (metrics.pig?.error || metrics.backend?.error || "metrics unavailable"))
+        reason: directMetrics.stale
+          ? `showing ${directMetrics.age_seconds}s old metrics; ${directMetrics.source_error || "latest metrics unavailable"}`
+          : (directMetrics.ok ? "" : (directMetrics.pig?.error || directMetrics.backend?.error || "metrics unavailable"))
       }
     };
   }));
   const summary = {
     nodes: nodes.length,
     enabled_nodes: nodes.filter((node) => node.enabled).length,
+    selectable_nodes: nodes.filter((node) => node.runtime?.capacity?.selectable).length,
+    request_aware_nodes: nodes.filter((node) => node.enabled && node.runtime?.capacity?.request_aware).length,
+    protected_nodes: nodes.filter((node) => node.runtime?.capacity?.state === "protected").length,
+    invalid_protocol_nodes: nodes.filter((node) => node.runtime?.capacity?.state === "protocol_invalid").length,
     routes: routes.length,
     router_running: routes.reduce((sum, route) => sum + numberOrZero(route.running), 0),
     pig_running: nodes.reduce((sum, node) => sum + numberOrZero(node.runtime?.pig?.running), 0),
@@ -484,6 +513,10 @@ async function buildRuntimeSnapshot(router) {
     cache_selected: routes.reduce((sum, route) => sum + numberOrZero(route.selected_by_cache), 0),
     load_selected: routes.reduce((sum, route) => sum + numberOrZero(route.selected_by_load), 0),
     order_selected: routes.reduce((sum, route) => sum + numberOrZero(route.selected_by_order), 0),
+    upstream_attempts: routes.reduce((sum, route) => sum + numberOrZero(route.upstream_attempts), 0),
+    upstream_429: routes.reduce((sum, route) => sum + numberOrZero(route.upstream_429), 0),
+    pending_reservations: routes.reduce((sum, route) => sum + numberOrZero(route.pending_reservations), 0),
+    dispatch_debt: routes.reduce((sum, route) => sum + numberOrZero(route.unreconciled_dispatches), 0),
     stale_nodes: nodes.filter((node) => node.health?.status === "metrics_stale").length
   };
   const warnings = [upstreamsResolved, routerResolved, modelsResolved].map((item) => item.warning).filter(Boolean);

@@ -13,6 +13,13 @@ embedded into a Phala deployment YAML.
 - No npm dependencies
 - Basic Auth for the page
 - Bearer token when calling router admin endpoints
+- Backward-compatible capacity display for legacy PIG limits and request-aware
+  PIG admission (`open`, `protected`, and `invalid` protocol states)
+
+The runtime page treats `global_limit=0` as a request-aware sentinel only when
+the Router reports `predictive_admission_enforce=true`. It displays Router
+selectability, effective running, reservations, dispatch debt, attempts, and
+upstream 429 counters instead of rendering request-aware open as `running / 0`.
 
 ## Configuration
 
@@ -36,5 +43,6 @@ Optional environment variables:
 
 ```bash
 node --check server.js
+npm test
 docker compose config
 ```

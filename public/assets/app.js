@@ -152,23 +152,68 @@ function meter(value, limit, subline, options = {}) {
   const waiting = Number(options.waiting || 0);
   const hasPressure = Number.isFinite(waiting) && waiting > 0;
   const rawPct = pct(value, limit);
-  const p = hasPressure ? (rawPct > 0 ? Math.max(8, rawPct) : 100) : rawPct;
-  const klass = metricLevel(value, limit, options);
+  const explicitPressure = options.tone === "pressure" || options.tone === "metrics_error";
+  const p = hasPressure || explicitPressure ? (rawPct > 0 ? Math.max(8, rawPct) : 100) : rawPct;
+  const klass = explicitPressure
+    ? "pressure"
+    : (options.tone === "metrics_stale" ? "yellow" : (options.tone === "healthy" ? "green" : metricLevel(value, limit, options)));
   return `
     <div class="metric-head">
       <span class="mono metric-value">${fmt(value)}${limit !== null && limit !== undefined ? " / " + fmt(limit) : ""}</span>
-      ${hasPressure ? `<span class="meter-chip pressure">waiting ${fmt(waiting)}</span>` : ""}
+      ${options.chip ? `<span class="meter-chip ${escapeAttr(options.chipTone || "neutral")}">${escapeHTML(options.chip)}</span>` : (hasPressure ? `<span class="meter-chip pressure">waiting ${fmt(waiting)}</span>` : "")}
     </div>
     <div class="bar ${klass}" style="--w:${p}%"><span></span></div>
     ${subline ? `<div class="subline mono metric-subline">${subline}</div>` : ""}
   `;
 }
 
+function capacityFor(node) {
+  const capacity = node.runtime?.capacity;
+  if (capacity && capacity.protocol) return capacity;
+  const pig = node.runtime?.pig || {};
+  const route = node.route || {};
+  return {
+    protocol: "legacy",
+    request_aware: false,
+    state: node.enabled ? "legacy" : "disabled",
+    label: node.enabled ? "legacy capacity" : "disabled",
+    tone: node.enabled ? "healthy" : "disabled",
+    reason: node.enabled ? "count-based global limit" : "not in routing pool",
+    selectable: Boolean(node.enabled),
+    running: pig.running ?? route.running ?? 0,
+    effective_running: route.effective_running ?? route.running ?? 0,
+    display_limit: pig.global_limit ?? null,
+    pending_reservations: route.pending_reservations ?? 0,
+    dispatch_debt: route.unreconciled_dispatches ?? 0,
+    upstream_attempts: route.upstream_attempts ?? 0,
+    upstream_429: route.upstream_429 ?? 0
+  };
+}
+
+function capacityRunText(capacity, running) {
+  if (capacity?.protocol === "request_aware_open") return `run ${fmt(running)} • request-aware`;
+  return `run ${fmt(running)}${capacity?.display_limit !== null && capacity?.display_limit !== undefined ? " / " + fmt(capacity.display_limit) : ""}`;
+}
+
+function capacitySubline(capacity) {
+  const fields = [capacity?.reason || capacity?.protocol || "capacity unknown"];
+  if (capacity?.inspect_capacity !== null && capacity?.inspect_capacity !== undefined) fields.push(`inspect ${fmt(capacity.inspect_capacity)}`);
+  if (Number(capacity?.pending_reservations || 0) > 0) fields.push(`pending ${fmt(capacity.pending_reservations)}`);
+  if (Number(capacity?.dispatch_debt || 0) > 0) fields.push(`debt ${fmt(capacity.dispatch_debt)}`);
+  return fields.join(" • ");
+}
+
+function capacityMeterTone(capacity) {
+  if (capacity?.protocol === "legacy" && capacity?.tone === "healthy") return undefined;
+  return capacity?.tone;
+}
+
 function selectionCell(route) {
   return `
     <div class="mono">cache ${fmt(route?.selected_by_cache || 0)}</div>
-    <div class="mono">load ${fmt(route?.selected_by_load || 0)}</div>
+    <div class="mono">load picks ${fmt(route?.selected_by_load || 0)}</div>
     <div class="mono">order ${fmt(route?.selected_by_order || 0)}</div>
+    <div class="mono">attempt ${fmt(route?.upstream_attempts || 0)} • 429 ${fmt(route?.upstream_429 || 0)}</div>
   `;
 }
 
@@ -176,13 +221,19 @@ function renderSummary(summary) {
   const items = [
     { label: "nodes", value: summary.nodes, tone: "neutral", hint: "configured" },
     { label: "enabled", value: summary.enabled_nodes, tone: "green" },
+    { label: "selectable", value: summary.selectable_nodes, tone: Number(summary.selectable_nodes || 0) < Number(summary.enabled_nodes || 0) ? "pressure" : "green" },
+    { label: "request-aware", value: summary.request_aware_nodes, tone: Number(summary.request_aware_nodes || 0) > 0 ? "blue" : "neutral" },
+    { label: "protected", value: summary.protected_nodes, tone: Number(summary.protected_nodes || 0) > 0 ? "pressure" : "neutral" },
+    { label: "protocol invalid", value: summary.invalid_protocol_nodes, tone: Number(summary.invalid_protocol_nodes || 0) > 0 ? "pressure" : "neutral" },
     { label: "router run", value: summary.router_running, tone: Number(summary.router_running || 0) > 0 ? "blue" : "neutral" },
     { label: "PIG run", value: summary.pig_running, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "green" },
     { label: "backend run", value: summary.backend_running, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "green" },
     { label: "waiting", value: summary.waiting, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "neutral" },
     { label: "stale", value: summary.stale_nodes, tone: Number(summary.stale_nodes || 0) > 0 ? "yellow" : "neutral" },
     { label: "cache", value: summary.cache_selected, tone: Number(summary.cache_selected || 0) > 0 ? "blue" : "neutral" },
-    { label: "load", value: summary.load_selected, tone: Number(summary.load_selected || 0) > 0 ? "yellow" : "neutral" }
+    { label: "load picks", value: summary.load_selected, tone: Number(summary.load_selected || 0) > 0 ? "blue" : "neutral" },
+    { label: "upstream 429", value: summary.upstream_429, tone: Number(summary.upstream_429 || 0) > 0 ? "yellow" : "neutral" },
+    { label: "dispatch debt", value: summary.dispatch_debt, tone: Number(summary.dispatch_debt || 0) > 0 ? "yellow" : "neutral" }
   ];
   $("summary").innerHTML = items.map(({ label, value, tone, hint }) => `
     <div class="stat ${tone}">
@@ -197,14 +248,16 @@ function renderNode(node) {
   const route = node.route || {};
   const pig = node.runtime?.pig || {};
   const backend = node.runtime?.backend || {};
-  const routerLimit = pig.global_limit ?? backend.running ?? route.running;
+  const capacity = capacityFor(node);
+  const routerLimit = capacity.display_limit;
   const pigWaiting = pig.waiting ?? backend.waiting ?? 0;
   const backendWaiting = backend.waiting ?? pig.waiting ?? 0;
   const publicModel = Object.keys(node.models || {})[0] || "";
   const upstreamModel = publicModel ? node.models[publicModel] : "";
   const enabledClass = node.enabled ? "enabled" : "disabled";
-  const healthStatus = node.health?.status || "unknown";
-  const healthReason = node.health?.reason || "";
+  const healthStatus = capacity.tone || node.health?.status || "unknown";
+  const healthLabel = capacity.label || node.health?.status || "unknown";
+  const healthReason = [capacity.reason, node.health?.reason].filter(Boolean).join("; ");
   return `
     <tr data-node="${escapeAttr(node.name)}">
       <td><button class="switch ${enabledClass}" data-action="toggle">${node.enabled ? "enabled" : "disabled"}</button></td>
@@ -216,11 +269,11 @@ function renderNode(node) {
         <div class="mono subline">${escapeHTML(node.base_url || "")}</div>
         <div class="subline">${escapeHTML(node.provider || "")}</div>
       </td>
-      <td>${node.enabled ? meter(pig.running, pig.global_limit, "", { waiting: pigWaiting }) : meter(null, null)}</td>
-      <td>${node.enabled ? meter(backend.running, pig.global_limit, `waiting ${fmt(backend.waiting)} kv ${fmt(backend.kv_usage)}`, { waiting: backendWaiting }) : meter(null, null, "waiting - kv -")}</td>
-      <td>${meter(route.running || 0, routerLimit, `processed ${fmt(route.processed || 0)}`)}</td>
+      <td>${node.enabled ? meter(pig.running, capacity.display_limit, capacitySubline(capacity), { waiting: pigWaiting, tone: capacityMeterTone(capacity), chip: capacity.label, chipTone: capacity.tone }) : meter(null, null)}</td>
+      <td>${node.enabled ? meter(backend.running, capacity.display_limit, `waiting ${fmt(backend.waiting)} kv ${fmt(backend.kv_usage)}`, { waiting: backendWaiting, tone: capacity.state === "protected" ? "pressure" : undefined }) : meter(null, null, "waiting - kv -")}</td>
+      <td>${meter(route.running || 0, routerLimit, `effective ${fmt(capacity.effective_running)} • processed ${fmt(route.processed || 0)} • debt ${fmt(capacity.dispatch_debt)}`, { tone: capacityMeterTone(capacity) })}</td>
       <td>${selectionCell(route)}</td>
-      <td><span class="pill ${escapeAttr(healthStatus)}">${escapeHTML(healthStatus)}</span>${healthReason ? `<div class="subline">${escapeHTML(healthReason)}</div>` : ""}</td>
+      <td><span class="pill ${escapeAttr(healthStatus)}">${escapeHTML(healthLabel)}</span>${healthReason ? `<div class="subline">${escapeHTML(healthReason)}</div>` : ""}</td>
       <td>
         <div class="row-actions">
           <button data-action="load">load</button>
@@ -235,14 +288,16 @@ function renderNodeCard(node) {
   const route = node.route || {};
   const pig = node.runtime?.pig || {};
   const backend = node.runtime?.backend || {};
-  const routerLimit = pig.global_limit ?? backend.running ?? route.running;
+  const capacity = capacityFor(node);
+  const routerLimit = capacity.display_limit;
   const pigWaiting = pig.waiting ?? backend.waiting ?? 0;
   const backendWaiting = backend.waiting ?? pig.waiting ?? 0;
   const publicModel = Object.keys(node.models || {})[0] || "";
   const upstreamModel = publicModel ? node.models[publicModel] : "";
   const enabledClass = node.enabled ? "enabled" : "disabled";
-  const healthStatus = node.health?.status || "unknown";
-  const healthReason = node.health?.reason || "";
+  const healthStatus = capacity.tone || node.health?.status || "unknown";
+  const healthLabel = capacity.label || node.health?.status || "unknown";
+  const healthReason = [capacity.reason, node.health?.reason].filter(Boolean).join("; ");
   return `
     <article class="node-card ${enabledClass} ${escapeAttr(healthStatus)}" data-node="${escapeAttr(node.name)}">
       <div class="node-card-top">
@@ -259,25 +314,26 @@ function renderNodeCard(node) {
       <div class="node-card-metrics">
         <div class="card-meter">
           <div class="card-meter-title">PIG run</div>
-          ${node.enabled ? meter(pig.running, pig.global_limit, "", { waiting: pigWaiting }) : meter(null, null)}
+          ${node.enabled ? meter(pig.running, capacity.display_limit, capacitySubline(capacity), { waiting: pigWaiting, tone: capacityMeterTone(capacity), chip: capacity.label, chipTone: capacity.tone }) : meter(null, null)}
         </div>
         <div class="card-meter">
           <div class="card-meter-title">Backend</div>
-          ${node.enabled ? meter(backend.running, pig.global_limit, `waiting ${fmt(backend.waiting)} kv ${fmt(backend.kv_usage)}`, { waiting: backendWaiting }) : meter(null, null, "waiting - kv -")}
+          ${node.enabled ? meter(backend.running, capacity.display_limit, `waiting ${fmt(backend.waiting)} kv ${fmt(backend.kv_usage)}`, { waiting: backendWaiting, tone: capacity.state === "protected" ? "pressure" : undefined }) : meter(null, null, "waiting - kv -")}
         </div>
         <div class="card-meter">
           <div class="card-meter-title">Router</div>
-          ${meter(route.running || 0, routerLimit, `processed ${fmt(route.processed || 0)}`)}
+          ${meter(route.running || 0, routerLimit, `effective ${fmt(capacity.effective_running)} • processed ${fmt(route.processed || 0)} • debt ${fmt(capacity.dispatch_debt)}`, { tone: capacityMeterTone(capacity) })}
         </div>
       </div>
       <div class="node-card-footer">
         <div class="card-selection mono">
           <span>cache ${fmt(route.selected_by_cache || 0)}</span>
-          <span>load ${fmt(route.selected_by_load || 0)}</span>
+          <span>load picks ${fmt(route.selected_by_load || 0)}</span>
+          <span>attempt ${fmt(route.upstream_attempts || 0)} • 429 ${fmt(route.upstream_429 || 0)}</span>
           <span>order ${fmt(route.selected_by_order || 0)}</span>
         </div>
         <div>
-          <span class="pill ${escapeAttr(healthStatus)}">${escapeHTML(healthStatus)}</span>
+          <span class="pill ${escapeAttr(healthStatus)}">${escapeHTML(healthLabel)}</span>
           ${healthReason ? `<div class="subline">${escapeHTML(healthReason)}</div>` : ""}
         </div>
       </div>
@@ -290,15 +346,18 @@ function renderNodeCard(node) {
 }
 
 function nodeTone(node) {
-  const pig = node.runtime?.pig || {};
-  const backend = node.runtime?.backend || {};
-  const waiting = Number(pig.waiting ?? backend.waiting ?? 0);
-  const healthStatus = node.health?.status || "unknown";
-  if (!node.enabled || healthStatus === "disabled") return "disabled";
-  if (waiting > 0 || healthStatus === "metrics_error") return "pressure";
-  const running = pig.running ?? backend.running ?? node.route?.running;
-  const limit = pig.global_limit ?? backend.global_limit;
-  return metricLevel(running, limit);
+  const capacity = capacityFor(node);
+  if (!node.enabled || capacity.tone === "disabled") return "disabled";
+  if (capacity.tone === "pressure" || capacity.tone === "metrics_error") return "pressure";
+  if (capacity.tone === "metrics_stale") return "yellow";
+  if (capacity.protocol === "legacy") {
+    const pig = node.runtime?.pig || {};
+    const backend = node.runtime?.backend || {};
+    const running = pig.running ?? backend.running ?? node.route?.running;
+    const waiting = pig.waiting ?? backend.waiting ?? 0;
+    return metricLevel(running, capacity.display_limit, { waiting });
+  }
+  return "green";
 }
 
 function setEditorOpen(open) {
@@ -339,14 +398,16 @@ function topologyNodeMetrics(node) {
   const route = node.route || {};
   const pig = node.runtime?.pig || {};
   const backend = node.runtime?.backend || {};
-  const running = Number(pig.running ?? backend.running ?? route.running ?? 0);
-  const limit = pig.global_limit ?? backend.global_limit ?? route.limit ?? null;
+  const capacity = capacityFor(node);
+  const running = Number(capacity.effective_running ?? pig.running ?? backend.running ?? route.running ?? 0);
+  const limit = capacity.display_limit;
   const waiting = Number(pig.waiting ?? backend.waiting ?? 0);
   const publicModel = Object.keys(node.models || {})[0] || "";
   return {
     route,
     pig,
     backend,
+    capacity,
     running,
     limit,
     waiting,
@@ -361,13 +422,19 @@ function summaryStats(summary) {
   return [
     { label: "nodes", value: summary.nodes, tone: "neutral" },
     { label: "enabled", value: summary.enabled_nodes, tone: "green" },
+    { label: "selectable", value: summary.selectable_nodes, tone: Number(summary.selectable_nodes || 0) < Number(summary.enabled_nodes || 0) ? "pressure" : "green" },
+    { label: "request-aware", value: summary.request_aware_nodes, tone: Number(summary.request_aware_nodes || 0) > 0 ? "blue" : "neutral" },
+    { label: "protected", value: summary.protected_nodes, tone: Number(summary.protected_nodes || 0) > 0 ? "pressure" : "neutral" },
+    { label: "protocol invalid", value: summary.invalid_protocol_nodes, tone: Number(summary.invalid_protocol_nodes || 0) > 0 ? "pressure" : "neutral" },
     { label: "stale", value: summary.stale_nodes, tone: Number(summary.stale_nodes || 0) > 0 ? "yellow" : "neutral" },
     { label: "router", value: summary.router_running, tone: Number(summary.router_running || 0) > 0 ? "blue" : "neutral" },
     { label: "PIG", value: summary.pig_running, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "green" },
     { label: "backend", value: summary.backend_running, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "green" },
     { label: "waiting", value: summary.waiting, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "neutral" },
     { label: "cache", value: summary.cache_selected, tone: "blue" },
-    { label: "load", value: summary.load_selected, tone: "yellow" }
+    { label: "load picks", value: summary.load_selected, tone: "blue" },
+    { label: "upstream 429", value: summary.upstream_429, tone: Number(summary.upstream_429 || 0) > 0 ? "yellow" : "neutral" },
+    { label: "dispatch debt", value: summary.dispatch_debt, tone: Number(summary.dispatch_debt || 0) > 0 ? "yellow" : "neutral" }
   ];
 }
 
@@ -562,11 +629,11 @@ function drawUpstreamNode(node, ctx) {
     ctx.stroke();
     drawCenteredText(ctx, "DISABLED", x, y + 15, badgeW - 10, "900 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", mutedStrong);
   } else {
-    drawCenteredText(ctx, `run ${fmt(metrics.running)} / ${fmt(metrics.limit)}`, x, y + 13, 118, "800 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", mutedStrong);
+    drawCenteredText(ctx, capacityRunText(metrics.capacity, metrics.running), x, y + 13, 118, "800 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", mutedStrong);
   }
   const route = metrics.route || {};
   const wait = Number(metrics.waiting || 0) > 0 ? ` wait ${fmt(metrics.waiting)}` : "";
-  drawCenteredText(ctx, disabled ? "not in routing pool" : `cache ${fmt(route.selected_by_cache || 0)} load ${fmt(route.selected_by_load || 0)}${wait}`, x, y + 35, 118, "700 8px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", muted);
+  drawCenteredText(ctx, disabled ? "not in routing pool" : `cache ${fmt(route.selected_by_cache || 0)} load picks ${fmt(route.selected_by_load || 0)}${wait}`, x, y + 35, 118, "700 8px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", muted);
 }
 
 function drawTopologyNode(node, ctx) {
@@ -1217,9 +1284,11 @@ function topologyNodeLabel(node) {
   return `
     <div class="graph-tooltip">
       <strong>${escapeHTML(node.label)}</strong>
-      <span>run ${fmt(metrics.running)} / ${fmt(metrics.limit)}</span>
+      <span>${capacityRunText(metrics.capacity, metrics.running)}</span>
       <span>waiting ${fmt(metrics.waiting)}</span>
-      <span>cache ${fmt(route.selected_by_cache || 0)} load ${fmt(route.selected_by_load || 0)}</span>
+      <span>${escapeHTML(metrics.capacity?.label || "legacy capacity")}</span>
+      <span>cache ${fmt(route.selected_by_cache || 0)} load picks ${fmt(route.selected_by_load || 0)}</span>
+      <span>attempt ${fmt(route.upstream_attempts || 0)} • 429 ${fmt(route.upstream_429 || 0)}</span>
     </div>
   `;
 }
