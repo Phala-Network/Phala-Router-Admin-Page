@@ -185,6 +185,7 @@ test("runtime endpoint preserves legacy capacity and understands request-aware p
   assert.equal(byName["use1-protected"].runtime.capacity.state, "protected");
   assert.equal(byName["use1-protected"].runtime.capacity.selectable, false);
   assert.equal(byName.disabled.runtime.capacity.state, "disabled");
+  assert.equal(byName.disabled.health.reason, "");
   assert.equal(runtime.summary.request_aware_nodes, 2);
   assert.equal(runtime.summary.protected_nodes, 1);
   assert.equal(runtime.summary.selectable_nodes, 2);

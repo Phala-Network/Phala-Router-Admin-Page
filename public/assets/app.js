@@ -232,7 +232,7 @@ function renderSummary(summary) {
     { label: "stale", value: summary.stale_nodes, tone: Number(summary.stale_nodes || 0) > 0 ? "yellow" : "neutral" },
     { label: "cache", value: summary.cache_selected, tone: Number(summary.cache_selected || 0) > 0 ? "blue" : "neutral" },
     { label: "load picks", value: summary.load_selected, tone: Number(summary.load_selected || 0) > 0 ? "blue" : "neutral" },
-    { label: "upstream 429", value: summary.upstream_429, tone: Number(summary.upstream_429 || 0) > 0 ? "yellow" : "neutral" },
+    { label: "upstream 429", value: summary.upstream_429, tone: Number(summary.upstream_429 || 0) > 0 ? "blue" : "neutral" },
     { label: "dispatch debt", value: summary.dispatch_debt, tone: Number(summary.dispatch_debt || 0) > 0 ? "yellow" : "neutral" }
   ];
   $("summary").innerHTML = items.map(({ label, value, tone, hint }) => `
@@ -433,7 +433,7 @@ function summaryStats(summary) {
     { label: "waiting", value: summary.waiting, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "neutral" },
     { label: "cache", value: summary.cache_selected, tone: "blue" },
     { label: "load picks", value: summary.load_selected, tone: "blue" },
-    { label: "upstream 429", value: summary.upstream_429, tone: Number(summary.upstream_429 || 0) > 0 ? "yellow" : "neutral" },
+    { label: "upstream 429", value: summary.upstream_429, tone: Number(summary.upstream_429 || 0) > 0 ? "blue" : "neutral" },
     { label: "dispatch debt", value: summary.dispatch_debt, tone: Number(summary.dispatch_debt || 0) > 0 ? "yellow" : "neutral" }
   ];
 }

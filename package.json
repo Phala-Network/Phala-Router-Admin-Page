@@ -1,6 +1,6 @@
 {
   "name": "phala-router-admin-page",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Small authenticated admin page for Phala router upstream management.",
   "type": "commonjs",

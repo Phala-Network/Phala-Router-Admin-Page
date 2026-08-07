@@ -491,7 +491,9 @@ async function buildRuntimeSnapshot(router) {
       },
       health: {
         status: health,
-        reason: directMetrics.stale
+        reason: !enabled
+          ? ""
+          : directMetrics.stale
           ? `showing ${directMetrics.age_seconds}s old metrics; ${directMetrics.source_error || "latest metrics unavailable"}`
           : (directMetrics.ok ? "" : (directMetrics.pig?.error || directMetrics.backend?.error || "metrics unavailable"))
       }
