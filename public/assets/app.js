@@ -1578,16 +1578,18 @@ async function savePigPolicy() {
   const revision = Number(latestPigPolicy?.revision || $("pig-policy-revision").dataset.revision);
   const tpsReference = Number($("pig-tps-reference").value);
   if (!nodeID) throw new Error("select a node first");
-  if (!Number.isFinite(revision) || revision <= 0) throw new Error("read policy before applying changes");
   if (!Number.isFinite(tpsReference) || tpsReference < 0 || tpsReference > 1000000) {
     throw new Error("TPS reference must be a finite number in [0, 1000000]");
   }
   setPigPolicyButtons(true);
   setPigPolicyMessage("applying policy...");
   try {
+    const payload = Number.isFinite(revision) && revision > 0
+      ? { expected_revision: revision, tps_reference: tpsReference }
+      : { tps_reference: tpsReference };
     const policy = await api(`/api/pig-policy?node=${encodeURIComponent(nodeID)}`, {
       method: "PATCH",
-      body: JSON.stringify({ expected_revision: revision, tps_reference: tpsReference })
+      body: JSON.stringify(payload)
     });
     renderPigPolicy(nodeID, policy);
     log(`PIG policy updated for ${nodeID}: tps_reference=${fmt(tpsReference)} revision=${fmt(policy.revision)}`, "ok");
