@@ -287,7 +287,6 @@ function renderNode(node) {
       <td><span class="pill ${escapeAttr(healthStatus)}">${escapeHTML(healthLabel)}</span>${healthReason ? `<div class="subline">${escapeHTML(healthReason)}</div>` : ""}</td>
       <td>
         <div class="row-actions">
-          ${renderDirectTPSControl(node)}
           <div class="node-action-buttons">
             <button data-action="load">load</button>
             <button data-action="policy">policy</button>
@@ -312,24 +311,29 @@ function renderNodeCard(node) {
   const enabledClass = node.enabled ? "enabled" : "disabled";
   const healthStatus = capacity.tone || node.health?.status || "unknown";
   const healthLabel = capacity.label || node.health?.status || "unknown";
+  const compactStatus = compactCapacityLabel(capacity, healthLabel);
   const healthReason = [capacity.reason, node.health?.reason].filter(Boolean).join("; ");
   return `
     <article class="node-card ${enabledClass} ${escapeAttr(healthStatus)}" data-node="${escapeAttr(node.name)}">
       <div class="node-card-top">
-        <div>
+        <div class="node-card-heading">
           <div class="node-title">${escapeHTML(node.name)}</div>
           <div class="subline mono">${escapeHTML(publicModel)}${upstreamModel ? " -> " + escapeHTML(upstreamModel) : ""}</div>
         </div>
-        <button class="switch ${enabledClass}" data-action="toggle">${node.enabled ? "enabled" : "disabled"}</button>
+        <div class="node-card-state">
+          <span class="pill ${escapeAttr(healthStatus)}">${escapeHTML(compactStatus)}</span>
+          <button class="switch ${enabledClass}" data-action="toggle">${node.enabled ? "enabled" : "disabled"}</button>
+        </div>
       </div>
       <div class="node-card-endpoint">
         <div class="mono">${escapeHTML(node.base_url || "")}</div>
         <div>${escapeHTML(node.provider || "")}</div>
       </div>
+      ${healthReason ? `<div class="health-note">${escapeHTML(healthReason)}</div>` : ""}
       <div class="node-card-metrics">
         <div class="card-meter">
           <div class="card-meter-title">PIG run</div>
-          ${node.enabled ? meter(pig.running, capacity.display_limit, capacitySubline(capacity), { waiting: pigWaiting, tone: capacityMeterTone(capacity), chip: capacity.label, chipTone: capacity.tone }) : meter(null, null)}
+          ${node.enabled ? meter(pig.running, capacity.display_limit, capacitySubline(capacity), { waiting: pigWaiting, tone: capacityMeterTone(capacity), chip: compactStatus, chipTone: capacity.tone }) : meter(null, null)}
         </div>
         <div class="card-meter">
           <div class="card-meter-title">Backend</div>
@@ -347,10 +351,6 @@ function renderNodeCard(node) {
           <span>attempt ${fmt(route.upstream_attempts || 0)} • 429 ${fmt(route.upstream_429 || 0)}</span>
           <span>order ${fmt(route.selected_by_order || 0)}</span>
         </div>
-        <div>
-          <span class="pill ${escapeAttr(healthStatus)}">${escapeHTML(healthLabel)}</span>
-          ${healthReason ? `<div class="subline">${escapeHTML(healthReason)}</div>` : ""}
-        </div>
       </div>
       <div class="row-actions node-card-actions">
         ${renderDirectTPSControl(node)}
@@ -362,6 +362,17 @@ function renderNodeCard(node) {
       </div>
     </article>
   `;
+}
+
+function compactCapacityLabel(capacity, fallback) {
+  const state = String(capacity?.state || "").trim();
+  if (state === "open") return "open";
+  if (state === "protected") return "protected";
+  if (state === "legacy") return "legacy";
+  if (state === "disabled") return "disabled";
+  if (state === "metrics_error") return "metrics error";
+  if (state === "metrics_stale") return "stale";
+  return String(fallback || "unknown").replace(/^request-aware\s+/i, "");
 }
 
 function pigPolicyCacheKey(nodeID, routerID = currentRouterId()) {
@@ -384,6 +395,7 @@ function renderDirectTPSControl(node) {
   const value = cachedPigTPSReference(node.name);
   return `
     <div class="tps-control" data-policy-node="${escapeAttr(node.name)}">
+      <span class="tps-label">TPS</span>
       <input class="tps-input" data-role="tps-reference" type="number" min="0" max="1000000" step="1" inputmode="numeric" placeholder="TPS" value="${value === null ? "" : escapeAttr(value)}" aria-label="PIG TPS reference for ${escapeAttr(node.name)}">
       <button class="tps-action" data-action="set-tps" type="button" aria-label="Set integer PIG TPS reference for ${escapeAttr(node.name)}">Set</button>
     </div>
