@@ -246,9 +246,7 @@ main {
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
     "summary"
-    "nodes"
-    "editor"
-    "raw";
+    "nodes";
   gap: 16px;
   padding: 18px 22px 28px;
   align-items: start;
@@ -273,6 +271,80 @@ main > * {
 .layout-nodes { grid-area: nodes; }
 .layout-editor { grid-area: editor; }
 .layout-raw { grid-area: raw; }
+
+.workspace-drawer {
+  position: fixed;
+  left: 18px;
+  right: 18px;
+  bottom: 0;
+  z-index: 20;
+  height: min(78vh, 820px);
+  transform: translateY(calc(100% - 42px));
+  transition: transform 180ms ease;
+}
+
+body.editor-open .workspace-drawer {
+  transform: translateY(0);
+}
+
+.workspace-drawer-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: min(260px, calc(100vw - 36px));
+  min-height: 42px;
+  margin: 0 auto;
+  padding: 0 14px;
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+  background: color-mix(in srgb, var(--surface) 96%, #000000);
+  box-shadow: 0 -12px 34px rgba(0, 0, 0, 0.34);
+}
+
+.drawer-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  color: var(--primary);
+  border: 1px solid color-mix(in srgb, var(--primary) 46%, transparent);
+  border-radius: 999px;
+  transition: transform 180ms ease;
+}
+
+body.editor-open .drawer-arrow {
+  transform: rotate(180deg);
+}
+
+.workspace-drawer-content {
+  display: grid;
+  grid-template-columns: minmax(330px, 440px) minmax(420px, 1fr);
+  gap: 14px;
+  height: calc(100% - 42px);
+  min-height: 0;
+  padding: 14px;
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px 12px 0 0;
+  background: color-mix(in srgb, var(--surface) 98%, #000000);
+  box-shadow: 0 -18px 54px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(16px);
+}
+
+.workspace-drawer .panel {
+  min-height: 0;
+  box-shadow: none;
+}
+
+.workspace-drawer .layout-editor,
+.workspace-drawer .layout-raw {
+  display: block;
+  grid-area: auto;
+}
 
 label {
   display: grid;
@@ -775,7 +847,8 @@ td:nth-child(9) { width: 180px; }
 .pig-policy-actions {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: flex-start;
   gap: 8px;
 }
 
@@ -852,10 +925,17 @@ td:nth-child(9) { width: 180px; }
 
 .tps-control {
   display: grid;
-  grid-template-columns: auto minmax(68px, 1fr) auto;
+  grid-template-columns: minmax(94px, 1fr);
+  gap: 6px;
+  width: min(184px, 100%);
+  min-width: 0;
+}
+
+.tps-field {
+  display: grid;
+  grid-template-columns: auto minmax(64px, 1fr);
   align-items: stretch;
   gap: 5px;
-  width: min(226px, 100%);
   min-width: 0;
 }
 
@@ -863,7 +943,7 @@ td:nth-child(9) { width: 180px; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 34px;
+  min-height: 30px;
   padding: 0 7px;
   color: var(--muted);
   border: 1px solid var(--line);
@@ -875,16 +955,23 @@ td:nth-child(9) { width: 180px; }
 .tps-input {
   width: 100%;
   min-width: 0;
-  min-height: 34px;
+  min-height: 30px;
   padding: 6px 8px;
   font-size: 12px;
   text-align: right;
 }
 
+.tps-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+
 .tps-action {
-  min-height: 34px;
-  padding: 6px 10px;
-  font-size: 12px;
+  min-height: 28px;
+  padding: 5px 7px;
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 .node-action-buttons {
@@ -1174,9 +1261,7 @@ body[data-theme="phala-terminal"] .node-title::before {
 body[data-theme="phala-terminal"] main {
   grid-template-columns: 330px minmax(0, 1fr);
   grid-template-areas:
-    "summary nodes"
-    "editor nodes"
-    "raw raw";
+    "summary nodes";
   gap: 18px;
 }
 
@@ -1257,7 +1342,7 @@ body[data-theme="phala-terminal"] .row-actions {
 }
 
 body[data-theme="phala-terminal"] .row-actions .tps-control {
-  width: min(188px, 100%);
+  width: min(176px, 100%);
 }
 
 body[data-theme="phala-terminal"] .row-actions .tps-label,
@@ -1320,8 +1405,7 @@ body[data-theme="vast-console"] main {
   grid-template-columns: minmax(0, 1fr) 370px;
   grid-template-areas:
     "summary summary"
-    "cards editor"
-    "raw raw";
+    "cards cards";
 }
 
 body[data-theme="vast-console"] .layout-cards {
@@ -1357,9 +1441,7 @@ body[data-theme="clean-ops"] main {
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
     "nodes"
-    "summary"
-    "editor"
-    "raw";
+    "summary";
   gap: 12px;
   padding-top: 14px;
 }
@@ -1405,9 +1487,7 @@ body[data-theme="signal-board"] .app-header {
 body[data-theme="signal-board"] main {
   grid-template-columns: 330px minmax(0, 1fr);
   grid-template-areas:
-    "summary cards"
-    "editor cards"
-    "raw raw";
+    "summary cards";
   gap: 16px;
 }
 
@@ -1528,6 +1608,10 @@ body[data-theme="mesh-topology"] .layout-raw {
   display: none;
 }
 
+body[data-theme="mesh-topology"] .workspace-drawer .layout-raw {
+  display: block;
+}
+
 body[data-theme="mesh-topology"] .summary-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
@@ -1566,6 +1650,21 @@ body[data-theme="mesh-topology"] .layout-editor {
   backdrop-filter: blur(16px);
 }
 
+body[data-theme="mesh-topology"] .workspace-drawer .layout-editor {
+  position: static;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  width: auto;
+  overflow: visible;
+  opacity: 1;
+  transform: none;
+  transition: none;
+  background: color-mix(in srgb, var(--surface-2) 86%, transparent);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
 body[data-theme="mesh-topology"].editor-open .layout-editor {
   opacity: 1;
   transform: translateX(0);
@@ -1573,6 +1672,13 @@ body[data-theme="mesh-topology"].editor-open .layout-editor {
 
 .drawer-close {
   display: none;
+}
+
+.workspace-drawer .drawer-close {
+  display: inline-flex;
+  min-height: 30px;
+  padding: 5px 9px;
+  font-size: 11px;
 }
 
 body[data-theme="mesh-topology"] .drawer-close {
@@ -1613,9 +1719,17 @@ body[data-theme="mesh-topology"] .layout-nodes table {
       "summary"
       "topology"
       "cards"
-      "nodes"
-      "editor"
-      "raw";
+      "nodes";
+  }
+
+  .workspace-drawer {
+    left: 12px;
+    right: 12px;
+    height: min(82vh, 820px);
+  }
+
+  .workspace-drawer-content {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   body[data-theme="mesh-topology"] main {

@@ -62,7 +62,7 @@ function applyTheme(theme) {
   document.body.dataset.theme = next;
   $("theme-select").value = next;
   localStorage.setItem("phala-router-admin-theme", next);
-  if (next !== "mesh-topology") setEditorOpen(false);
+  setEditorOpen(false);
   if (topologyGraph) {
     if (next === "mesh-topology") {
       topologyGraph.resumeAnimation();
@@ -378,8 +378,7 @@ function renderNode(node) {
         <div class="row-actions">
           ${renderDirectTPSControl(node)}
           <div class="node-action-buttons">
-            <button data-action="load">load</button>
-            <button data-action="policy">policy</button>
+            <button data-action="load">setup</button>
             <button class="danger" data-action="delete">delete</button>
           </div>
         </div>
@@ -447,8 +446,7 @@ function renderNodeCard(node) {
       <div class="row-actions node-card-actions">
         ${renderDirectTPSControl(node)}
         <div class="node-action-buttons">
-          <button data-action="load">load</button>
-          <button data-action="policy">policy</button>
+          <button data-action="load">setup</button>
           <button class="danger" data-action="delete">delete</button>
         </div>
       </div>
@@ -523,9 +521,14 @@ function renderDirectTPSControl(node) {
   const value = cachedPigTPSReference(node.name);
   return `
     <div class="tps-control" data-policy-node="${escapeAttr(node.name)}">
-      <span class="tps-label">TPS</span>
-      <input class="tps-input" data-role="tps-reference" type="number" min="0" max="1000000" step="1" inputmode="numeric" placeholder="TPS" value="${value === null ? "" : escapeAttr(value)}" aria-label="PIG TPS reference for ${escapeAttr(node.name)}">
-      <button class="tps-action" data-action="set-tps" type="button" aria-label="Set integer PIG TPS reference for ${escapeAttr(node.name)}">Set</button>
+      <label class="tps-field">
+        <span class="tps-label">TPS</span>
+        <input class="tps-input" data-role="tps-reference" type="number" min="0" max="1000000" step="1" inputmode="numeric" placeholder="TPS" value="${value === null ? "" : escapeAttr(value)}" aria-label="PIG TPS reference for ${escapeAttr(node.name)}">
+      </label>
+      <div class="tps-actions">
+        <button class="tps-action" data-action="policy" type="button" aria-label="Load PIG TPS policy for ${escapeAttr(node.name)}">load tps</button>
+        <button class="tps-action primary" data-action="set-tps" type="button" aria-label="Save integer PIG TPS reference for ${escapeAttr(node.name)}">save tps</button>
+      </div>
     </div>
   `;
 }
@@ -546,7 +549,12 @@ function nodeTone(node) {
 }
 
 function setEditorOpen(open) {
-  document.body.classList.toggle("editor-open", Boolean(open));
+  const next = Boolean(open);
+  document.body.classList.toggle("editor-open", next);
+  const drawer = $("workspace-drawer");
+  const toggle = $("workspace-drawer-toggle");
+  if (drawer) drawer.setAttribute("aria-hidden", next ? "false" : "true");
+  if (toggle) toggle.setAttribute("aria-expanded", next ? "true" : "false");
 }
 
 function cssValue(name) {
@@ -1810,7 +1818,10 @@ async function deleteNode(id) {
 }
 
 function loadSelected() {
-  if (selectedId) loadNode(nodeById(selectedId));
+  if (selectedId) {
+    loadNode(nodeById(selectedId));
+    setEditorOpen(true);
+  }
 }
 
 function showRawConfig() {
@@ -1827,6 +1838,7 @@ function showRawConfig() {
     return out;
   });
   $("raw-json").value = JSON.stringify(upstreams, null, 2);
+  setEditorOpen(true);
   $("raw-json").focus();
 }
 
@@ -1874,6 +1886,7 @@ $("load-btn").addEventListener("click", loadSelected);
 $("raw-btn").addEventListener("click", showRawConfig);
 $("save-raw-btn").addEventListener("click", saveRaw);
 $("close-editor-btn").addEventListener("click", () => setEditorOpen(false));
+$("workspace-drawer-toggle").addEventListener("click", () => setEditorOpen(!document.body.classList.contains("editor-open")));
 $("pig-policy-refresh-btn").addEventListener("click", () => {
   readPigPolicy().catch((err) => log(err.message, "err"));
 });
@@ -1892,11 +1905,11 @@ $("app-main").addEventListener("click", async (event) => {
   try {
     if (button.dataset.action === "load") {
       loadNode(node);
-      if (document.body.dataset.theme === "mesh-topology") setEditorOpen(true);
+      setEditorOpen(true);
     }
     if (button.dataset.action === "policy") {
       loadNode(node);
-      if (document.body.dataset.theme === "mesh-topology") setEditorOpen(true);
+      setEditorOpen(true);
       await readPigPolicy();
     }
     if (button.dataset.action === "toggle") await setEnabled(id, !(node && node.enabled));

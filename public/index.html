@@ -78,7 +78,15 @@
       </div>
     </section>
 
-    <section class="panel layout-editor">
+  </main>
+
+  <aside id="workspace-drawer" class="workspace-drawer" aria-hidden="true">
+    <button id="workspace-drawer-toggle" class="workspace-drawer-tab" type="button" aria-expanded="false" aria-controls="workspace-drawer-content">
+      <span class="drawer-arrow" aria-hidden="true">^</span>
+      <span>Setup / raw config</span>
+    </button>
+    <div id="workspace-drawer-content" class="workspace-drawer-content">
+      <section class="panel layout-editor">
       <div class="panel-title">
         <span>Add or update node</span>
         <button id="close-editor-btn" class="drawer-close" type="button">Close</button>
@@ -97,7 +105,7 @@
         </label>
         <label>Path<input id="path" value="/v1/chat/completions"></label>
         <button id="save-btn" class="primary" type="button">Save node</button>
-        <button id="load-btn" type="button">Load selected</button>
+        <button id="load-btn" type="button">Setup selected</button>
         <button id="raw-btn" type="button">Edit raw</button>
       </div>
       <div class="pig-policy-panel">
@@ -106,13 +114,13 @@
             <div class="pig-policy-title">PIG runtime policy</div>
             <div id="pig-policy-target" class="subline mono">select a node</div>
           </div>
-          <div class="pig-policy-actions">
-            <button id="pig-policy-refresh-btn" type="button">Read policy</button>
-            <button id="pig-policy-save-btn" class="primary" type="button">Set TPS</button>
-          </div>
         </div>
         <div class="pig-policy-grid">
           <label>TPS reference<input id="pig-tps-reference" type="number" min="0" max="1000000" step="1" inputmode="numeric" placeholder="-"></label>
+          <div class="pig-policy-actions">
+            <button id="pig-policy-refresh-btn" type="button">Load TPS</button>
+            <button id="pig-policy-save-btn" class="primary" type="button">Save TPS</button>
+          </div>
           <div class="policy-fact">
             <span>Revision</span>
             <strong id="pig-policy-revision" class="mono">-</strong>
@@ -136,17 +144,18 @@
         </div>
         <div id="pig-policy-message" class="subline mono"></div>
       </div>
-    </section>
+      </section>
 
-    <section class="panel layout-raw">
+      <section class="panel layout-raw">
       <div class="panel-title">Raw upstream config</div>
       <textarea id="raw-json" spellcheck="false"></textarea>
       <div class="raw-actions">
         <button id="save-raw-btn" class="primary" type="button">Replace upstreams</button>
       </div>
       <pre id="log"></pre>
-    </section>
-  </main>
+      </section>
+    </div>
+  </aside>
 
   <script src="/vendor/force-graph/force-graph.min.js"></script>
   <script src="/assets/app.js"></script>
