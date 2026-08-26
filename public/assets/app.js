@@ -356,15 +356,17 @@ function renderNode(node) {
   const healthStatus = capacity.tone || node.health?.status || "unknown";
   const healthLabel = capacity.label || node.health?.status || "unknown";
   const healthReason = [capacity.reason, node.health?.reason].filter(Boolean).join("; ");
+  const model = modelLine(publicModel, upstreamModel);
+  const host = shortHost(node.base_url || "");
   return `
     <tr data-node="${escapeAttr(node.name)}">
       <td><button class="switch ${enabledClass}" data-action="toggle">${node.enabled ? "enabled" : "disabled"}</button></td>
       <td>
         <div class="node-title">${escapeHTML(node.name)}</div>
-        <div class="subline mono">${escapeHTML(publicModel)}${upstreamModel ? " -> " + escapeHTML(upstreamModel) : ""}</div>
+        <div class="subline mono">${escapeHTML(model)}</div>
       </td>
       <td>
-        <div class="mono subline">${escapeHTML(node.base_url || "")}</div>
+        <div class="mono subline">${escapeHTML(host || node.base_url || "")}</div>
         <div class="subline">${escapeHTML(node.provider || "")}</div>
       </td>
       <td>${node.enabled ? meter(pig.running, capacity.display_limit, capacitySubline(capacity), { waiting: pigWaiting, tone: capacityMeterTone(capacity), chip: capacity.label, chipTone: capacity.tone }) : meter(null, null)}</td>
@@ -374,6 +376,7 @@ function renderNode(node) {
       <td><span class="pill ${escapeAttr(healthStatus)}">${escapeHTML(healthLabel)}</span>${healthReason ? `<div class="subline">${escapeHTML(healthReason)}</div>` : ""}</td>
       <td>
         <div class="row-actions">
+          ${renderDirectTPSControl(node)}
           <div class="node-action-buttons">
             <button data-action="load">load</button>
             <button data-action="policy">policy</button>
