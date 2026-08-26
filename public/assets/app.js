@@ -228,31 +228,118 @@ function selectionCell(route) {
   `;
 }
 
-function renderSummary(summary) {
-  const items = [
-    { label: "nodes", value: summary.nodes, tone: "neutral", hint: "configured" },
-    { label: "enabled", value: summary.enabled_nodes, tone: "green" },
-    { label: "selectable", value: summary.selectable_nodes, tone: Number(summary.selectable_nodes || 0) < Number(summary.enabled_nodes || 0) ? "pressure" : "green" },
-    { label: "request-aware", value: summary.request_aware_nodes, tone: Number(summary.request_aware_nodes || 0) > 0 ? "blue" : "neutral" },
-    { label: "protected", value: summary.protected_nodes, tone: Number(summary.protected_nodes || 0) > 0 ? "pressure" : "neutral" },
-    { label: "protocol invalid", value: summary.invalid_protocol_nodes, tone: Number(summary.invalid_protocol_nodes || 0) > 0 ? "pressure" : "neutral" },
-    { label: "router run", value: summary.router_running, tone: Number(summary.router_running || 0) > 0 ? "blue" : "neutral" },
-    { label: "PIG run", value: summary.pig_running, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "green" },
-    { label: "backend run", value: summary.backend_running, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "green" },
-    { label: "waiting", value: summary.waiting, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "neutral" },
-    { label: "stale", value: summary.stale_nodes, tone: Number(summary.stale_nodes || 0) > 0 ? "yellow" : "neutral" },
-    { label: "cache", value: summary.cache_selected, tone: Number(summary.cache_selected || 0) > 0 ? "blue" : "neutral" },
-    { label: "load picks", value: summary.load_selected, tone: Number(summary.load_selected || 0) > 0 ? "blue" : "neutral" },
-    { label: "upstream 429", value: summary.upstream_429, tone: Number(summary.upstream_429 || 0) > 0 ? "blue" : "neutral" },
-    { label: "dispatch debt", value: summary.dispatch_debt, tone: Number(summary.dispatch_debt || 0) > 0 ? "yellow" : "neutral" }
-  ];
-  $("summary").innerHTML = items.map(({ label, value, tone, hint }) => `
-    <div class="stat ${tone}">
-      <div class="label">${label}</div>
-      <div class="value">${fmt(value)}</div>
-      <div class="stat-hint">${hint || tone}</div>
+function summaryTone(summary) {
+  if (Number(summary.invalid_protocol_nodes || 0) > 0) return "pressure";
+  if (Number(summary.protected_nodes || 0) > 0) return "pressure";
+  if (Number(summary.waiting || 0) > 0) return "pressure";
+  if (Number(summary.selectable_nodes || 0) < Number(summary.enabled_nodes || 0)) return "pressure";
+  if (Number(summary.stale_nodes || 0) > 0) return "yellow";
+  return "green";
+}
+
+function summaryLine(label, value, tone) {
+  return `
+    <div class="stat-line ${escapeAttr(tone || "neutral")}">
+      <span>${escapeHTML(label)}</span>
+      <strong class="mono">${fmt(value)}</strong>
     </div>
-  `).join("");
+  `;
+}
+
+function pctText(part, total) {
+  const p = Number(part);
+  const t = Number(total);
+  if (!Number.isFinite(p) || !Number.isFinite(t) || t <= 0) return "-";
+  return `${Math.round((p / t) * 100)}%`;
+}
+
+function renderSummaryCard(item) {
+  return `
+    <div class="stat ${escapeAttr(item.tone || "neutral")} ${item.primary ? "primary-stat" : ""}">
+      <div class="stat-head">
+        <div>
+          <div class="label">${escapeHTML(item.label)}</div>
+          <div class="value">${fmt(item.value)}</div>
+        </div>
+        <span class="summary-badge ${escapeAttr(item.tone || "neutral")}">${escapeHTML(item.badge || item.tone || "ok")}</span>
+      </div>
+      <div class="stat-hint">${escapeHTML(item.hint || "")}</div>
+      <div class="stat-lines">
+        ${item.lines.map((line) => summaryLine(line.label, line.value, line.tone)).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderSummary(summary) {
+  const overallTone = summaryTone(summary);
+  const enabled = Number(summary.enabled_nodes || 0);
+  const selectable = Number(summary.selectable_nodes || 0);
+  const totalSelections = Number(summary.cache_selected || 0) + Number(summary.load_selected || 0);
+  const items = [
+    {
+      label: "Fleet",
+      value: `${fmt(selectable)} / ${fmt(enabled)}`,
+      tone: overallTone,
+      badge: overallTone === "green" ? "healthy" : overallTone,
+      hint: "selectable / enabled",
+      primary: true,
+      lines: [
+        { label: "nodes", value: summary.nodes },
+        { label: "disabled", value: Math.max(0, Number(summary.nodes || 0) - enabled) },
+        { label: "stale", value: summary.stale_nodes, tone: Number(summary.stale_nodes || 0) > 0 ? "yellow" : "neutral" }
+      ]
+    },
+    {
+      label: "Load",
+      value: summary.pig_running,
+      tone: Number(summary.waiting || 0) > 0 ? "pressure" : "green",
+      badge: Number(summary.waiting || 0) > 0 ? "waiting" : "open",
+      hint: "PIG running",
+      lines: [
+        { label: "backend", value: summary.backend_running },
+        { label: "router", value: summary.router_running },
+        { label: "waiting", value: summary.waiting, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "neutral" }
+      ]
+    },
+    {
+      label: "Routing",
+      value: summary.dispatch_debt,
+      tone: Number(summary.dispatch_debt || 0) > 0 ? "yellow" : "blue",
+      badge: "debt",
+      hint: "unreconciled dispatches",
+      lines: [
+        { label: "router run", value: summary.router_running },
+        { label: "upstream 429", value: summary.upstream_429, tone: Number(summary.upstream_429 || 0) > 0 ? "blue" : "neutral" },
+        { label: "protected", value: summary.protected_nodes, tone: Number(summary.protected_nodes || 0) > 0 ? "pressure" : "neutral" }
+      ]
+    },
+    {
+      label: "Selection",
+      value: summary.cache_selected,
+      tone: "blue",
+      badge: "cache",
+      hint: `cache share ${pctText(summary.cache_selected, totalSelections)}`,
+      lines: [
+        { label: "load picks", value: summary.load_selected },
+        { label: "cache picks", value: summary.cache_selected },
+        { label: "total picks", value: totalSelections }
+      ]
+    },
+    {
+      label: "Guard",
+      value: summary.request_aware_nodes,
+      tone: Number(summary.invalid_protocol_nodes || 0) > 0 || Number(summary.protected_nodes || 0) > 0 ? "pressure" : "green",
+      badge: "PIG",
+      hint: "request-aware nodes",
+      lines: [
+        { label: "protected", value: summary.protected_nodes, tone: Number(summary.protected_nodes || 0) > 0 ? "pressure" : "neutral" },
+        { label: "invalid", value: summary.invalid_protocol_nodes, tone: Number(summary.invalid_protocol_nodes || 0) > 0 ? "pressure" : "neutral" },
+        { label: "enabled", value: summary.enabled_nodes }
+      ]
+    }
+  ];
+  $("summary").innerHTML = items.map(renderSummaryCard).join("");
 }
 
 function renderNode(node) {
@@ -313,12 +400,14 @@ function renderNodeCard(node) {
   const healthLabel = capacity.label || node.health?.status || "unknown";
   const compactStatus = compactCapacityLabel(capacity, healthLabel);
   const healthReason = [capacity.reason, node.health?.reason].filter(Boolean).join("; ");
+  const host = shortHost(node.base_url || "");
+  const model = modelLine(publicModel, upstreamModel);
   return `
     <article class="node-card ${enabledClass} ${escapeAttr(healthStatus)}" data-node="${escapeAttr(node.name)}">
       <div class="node-card-top">
         <div class="node-card-heading">
           <div class="node-title">${escapeHTML(node.name)}</div>
-          <div class="subline mono">${escapeHTML(publicModel)}${upstreamModel ? " -> " + escapeHTML(upstreamModel) : ""}</div>
+          <div class="subline mono">${escapeHTML(model)}</div>
         </div>
         <div class="node-card-state">
           <span class="pill ${escapeAttr(healthStatus)}">${escapeHTML(compactStatus)}</span>
@@ -326,14 +415,14 @@ function renderNodeCard(node) {
         </div>
       </div>
       <div class="node-card-endpoint">
-        <div class="mono">${escapeHTML(node.base_url || "")}</div>
-        <div>${escapeHTML(node.provider || "")}</div>
+        <span class="mono">${escapeHTML(host || node.base_url || "")}</span>
+        <span>${escapeHTML(node.provider || "")}</span>
       </div>
       ${healthReason ? `<div class="health-note">${escapeHTML(healthReason)}</div>` : ""}
       <div class="node-card-metrics">
         <div class="card-meter">
           <div class="card-meter-title">PIG run</div>
-          ${node.enabled ? meter(pig.running, capacity.display_limit, capacitySubline(capacity), { waiting: pigWaiting, tone: capacityMeterTone(capacity), chip: compactStatus, chipTone: capacity.tone }) : meter(null, null)}
+          ${node.enabled ? meter(pig.running, capacity.display_limit, compactCapacitySubline(capacity), { waiting: pigWaiting, tone: capacityMeterTone(capacity), chip: compactStatus, chipTone: capacity.tone }) : meter(null, null)}
         </div>
         <div class="card-meter">
           <div class="card-meter-title">Backend</div>
@@ -346,10 +435,10 @@ function renderNodeCard(node) {
       </div>
       <div class="node-card-footer">
         <div class="card-selection mono">
-          <span>cache ${fmt(route.selected_by_cache || 0)}</span>
-          <span>load picks ${fmt(route.selected_by_load || 0)}</span>
-          <span>attempt ${fmt(route.upstream_attempts || 0)} • 429 ${fmt(route.upstream_429 || 0)}</span>
-          <span>order ${fmt(route.selected_by_order || 0)}</span>
+          <span title="cache ${escapeAttr(fmt(route.selected_by_cache || 0))}">cache ${compactCount(route.selected_by_cache || 0)}</span>
+          <span title="load ${escapeAttr(fmt(route.selected_by_load || 0))}">load ${compactCount(route.selected_by_load || 0)}</span>
+          <span title="try ${escapeAttr(fmt(route.upstream_attempts || 0))} / 429 ${escapeAttr(fmt(route.upstream_429 || 0))}">try/429 ${compactCount(route.upstream_attempts || 0)}/${compactCount(route.upstream_429 || 0)}</span>
+          <span title="order ${escapeAttr(fmt(route.selected_by_order || 0))}">order ${compactCount(route.selected_by_order || 0)}</span>
         </div>
       </div>
       <div class="row-actions node-card-actions">
@@ -373,6 +462,42 @@ function compactCapacityLabel(capacity, fallback) {
   if (state === "metrics_error") return "metrics error";
   if (state === "metrics_stale") return "stale";
   return String(fallback || "unknown").replace(/^request-aware\s+/i, "");
+}
+
+function compactCapacitySubline(capacity) {
+  if (!capacity) return "";
+  const fields = [];
+  if (capacity.display_limit !== null && capacity.display_limit !== undefined) fields.push(`limit ${fmt(capacity.display_limit)}`);
+  if (capacity.inspect_capacity !== null && capacity.inspect_capacity !== undefined) fields.push(`inspect ${fmt(capacity.inspect_capacity)}`);
+  if (Number(capacity.pending_reservations || 0) > 0) fields.push(`pending ${fmt(capacity.pending_reservations)}`);
+  if (Number(capacity.dispatch_debt || 0) > 0) fields.push(`debt ${fmt(capacity.dispatch_debt)}`);
+  if (fields.length > 0) return fields.join(" • ");
+  if (capacity.protocol === "request_aware_open") return "request-aware open";
+  return capacity.reason || capacity.protocol || "";
+}
+
+function modelLine(publicModel, upstreamModel) {
+  if (!publicModel && !upstreamModel) return "-";
+  if (!upstreamModel || upstreamModel === publicModel) return publicModel;
+  return `${publicModel} -> ${upstreamModel}`;
+}
+
+function shortHost(rawURL) {
+  try {
+    const url = new URL(rawURL);
+    return url.host || rawURL;
+  } catch {
+    return rawURL;
+  }
+}
+
+function compactCount(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return fmt(value);
+  const abs = Math.abs(number);
+  if (abs >= 1000000) return `${(number / 1000000).toFixed(abs >= 10000000 ? 0 : 1).replace(/\.0$/, "")}m`;
+  if (abs >= 1000) return `${Math.round(number / 1000)}k`;
+  return fmt(number);
 }
 
 function pigPolicyCacheKey(nodeID, routerID = currentRouterId()) {
@@ -476,22 +601,20 @@ function topologyNodeMetrics(node) {
 }
 
 function summaryStats(summary) {
+  const enabled = Number(summary.enabled_nodes || 0);
+  const selectable = Number(summary.selectable_nodes || 0);
+  const totalSelections = Number(summary.cache_selected || 0) + Number(summary.load_selected || 0);
   return [
-    { label: "nodes", value: summary.nodes, tone: "neutral" },
-    { label: "enabled", value: summary.enabled_nodes, tone: "green" },
-    { label: "selectable", value: summary.selectable_nodes, tone: Number(summary.selectable_nodes || 0) < Number(summary.enabled_nodes || 0) ? "pressure" : "green" },
-    { label: "request-aware", value: summary.request_aware_nodes, tone: Number(summary.request_aware_nodes || 0) > 0 ? "blue" : "neutral" },
-    { label: "protected", value: summary.protected_nodes, tone: Number(summary.protected_nodes || 0) > 0 ? "pressure" : "neutral" },
-    { label: "protocol invalid", value: summary.invalid_protocol_nodes, tone: Number(summary.invalid_protocol_nodes || 0) > 0 ? "pressure" : "neutral" },
-    { label: "stale", value: summary.stale_nodes, tone: Number(summary.stale_nodes || 0) > 0 ? "yellow" : "neutral" },
-    { label: "router", value: summary.router_running, tone: Number(summary.router_running || 0) > 0 ? "blue" : "neutral" },
-    { label: "PIG", value: summary.pig_running, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "green" },
-    { label: "backend", value: summary.backend_running, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "green" },
-    { label: "waiting", value: summary.waiting, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "neutral" },
-    { label: "cache", value: summary.cache_selected, tone: "blue" },
-    { label: "load picks", value: summary.load_selected, tone: "blue" },
-    { label: "upstream 429", value: summary.upstream_429, tone: Number(summary.upstream_429 || 0) > 0 ? "blue" : "neutral" },
-    { label: "dispatch debt", value: summary.dispatch_debt, tone: Number(summary.dispatch_debt || 0) > 0 ? "yellow" : "neutral" }
+    { label: "fleet", value: `${fmt(selectable)}/${fmt(enabled)}`, tone: summaryTone(summary) },
+    { label: "load", value: summary.pig_running, tone: Number(summary.waiting || 0) > 0 ? "pressure" : "green" },
+    { label: "router", value: summary.router_running, tone: Number(summary.dispatch_debt || 0) > 0 ? "yellow" : "blue" },
+    { label: "cache", value: pctText(summary.cache_selected, totalSelections), tone: "blue" },
+    { label: "429", value: summary.upstream_429, tone: Number(summary.upstream_429 || 0) > 0 ? "blue" : "neutral" },
+    {
+      label: "guard",
+      value: summary.request_aware_nodes,
+      tone: Number(summary.protected_nodes || 0) > 0 || Number(summary.invalid_protocol_nodes || 0) > 0 ? "pressure" : "green"
+    }
   ];
 }
 
