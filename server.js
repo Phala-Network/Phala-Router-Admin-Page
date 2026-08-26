@@ -15,6 +15,8 @@ const metricsStaleTtlMs = Number(process.env.METRICS_STALE_TTL_MS || "60000");
 const controlStaleTtlMs = Number(process.env.CONTROL_STALE_TTL_MS || "60000");
 const runtimeStaleTtlMs = Number(process.env.RUNTIME_STALE_TTL_MS || "60000");
 const staticRoot = path.join(__dirname, "public");
+const pigPolicyPath = "/admin/v1/predictive-policy";
+const pigPolicyBodyLimit = 4096;
 const metricsCache = new Map();
 const controlCache = new Map();
 const runtimeCache = new Map();
@@ -233,6 +235,91 @@ async function proxyGateway(req, res, router, requestPath) {
   res.end(upstream.text);
 }
 
+function parseJSONBody(buffer, label) {
+  try {
+    return JSON.parse(buffer.toString("utf8") || "{}");
+  } catch (err) {
+    throw new Error(`${label} is not valid JSON: ${err.message}`);
+  }
+}
+
+function normalizeTPSReference(value) {
+  const tpsReference = Number(value);
+  if (!Number.isFinite(tpsReference) || tpsReference < 0 || tpsReference > 1000000) {
+    throw new Error("TPS reference must be a finite number in [0, 1000000]");
+  }
+  return tpsReference;
+}
+
+function parsePolicyJSON(response) {
+  try {
+    const data = response.text ? JSON.parse(response.text) : {};
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      throw new Error("policy response is not a JSON object");
+    }
+    return data;
+  } catch (err) {
+    throw new Error(`PIG policy response is not valid JSON: ${err.message}`);
+  }
+}
+
+async function pigPolicyRequest(baseURL, method, payload) {
+  const headers = {
+    Authorization: `Bearer ${sharedBearerToken()}`,
+    Accept: "application/json"
+  };
+  let body;
+  if (payload !== undefined) {
+    body = Buffer.from(JSON.stringify(payload));
+    headers["Content-Type"] = "application/json";
+  }
+  const upstream = await fetchWithTimeout(baseURL + pigPolicyPath, {
+    method,
+    headers,
+    body
+  });
+  return {
+    status: upstream.status,
+    text: await upstream.text(),
+    contentType: upstream.headers.get("content-type") || "application/json; charset=utf-8"
+  };
+}
+
+async function readPigPolicyFromNode(baseURL) {
+  const response = await pigPolicyRequest(baseURL, "GET");
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`PIG policy read failed: HTTP ${response.status} ${response.text}`);
+  }
+  const policy = parsePolicyJSON(response);
+  const revision = Number(policy.revision);
+  if (!Number.isFinite(revision) || revision <= 0) {
+    throw new Error("PIG policy response has no positive numeric revision");
+  }
+  return policy;
+}
+
+async function patchPigPolicyDirect(baseURL, tpsReference) {
+  let latestResponse = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const policy = await readPigPolicyFromNode(baseURL);
+    const revision = Number(policy.revision);
+    latestResponse = await pigPolicyRequest(baseURL, "PATCH", {
+      expected_revision: revision,
+      tps_reference: tpsReference
+    });
+    if (latestResponse.status !== 409) return latestResponse;
+  }
+  return latestResponse;
+}
+
+function sendPigPolicyResponse(res, upstream) {
+  res.writeHead(upstream.status, {
+    "Content-Type": upstream.contentType,
+    "Cache-Control": "no-store"
+  });
+  res.end(upstream.text);
+}
+
 async function proxyPigPolicy(req, res, router, url) {
   const nodeID = String(url.searchParams.get("node") || "").trim();
   if (!nodeID) throw new Error("node is required");
@@ -242,27 +329,26 @@ async function proxyPigPolicy(req, res, router, url) {
   const baseURL = normalizedBaseURL(node.base_url);
   if (!baseURL) throw new Error(`node ${nodeID} has no base_url`);
 
-  let body;
-  const headers = {
-    Authorization: `Bearer ${sharedBearerToken()}`,
-    Accept: "application/json"
-  };
+  let upstream;
   if (req.method === "PATCH") {
-    body = await readBody(req);
-    if (body.length > 4096) throw new Error("PIG policy request body exceeds 4096 bytes");
-    headers["Content-Type"] = "application/json";
+    const body = await readBody(req);
+    if (body.length > pigPolicyBodyLimit) {
+      throw new Error(`PIG policy request body exceeds ${pigPolicyBodyLimit} bytes`);
+    }
+    const input = parseJSONBody(body, "PIG policy request body");
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new Error("PIG policy request body must be a JSON object");
+    }
+    const tpsReference = normalizeTPSReference(input.tps_reference);
+    if (Object.hasOwn(input, "expected_revision")) {
+      upstream = await pigPolicyRequest(baseURL, "PATCH", input);
+    } else {
+      upstream = await patchPigPolicyDirect(baseURL, tpsReference);
+    }
+  } else {
+    upstream = await pigPolicyRequest(baseURL, req.method);
   }
-  const upstream = await fetchWithTimeout(baseURL + "/admin/v1/predictive-policy", {
-    method: req.method,
-    headers,
-    body: body && body.length ? body : undefined
-  });
-  const text = await upstream.text();
-  res.writeHead(upstream.status, {
-    "Content-Type": upstream.headers.get("content-type") || "application/json; charset=utf-8",
-    "Cache-Control": "no-store"
-  });
-  res.end(text);
+  sendPigPolicyResponse(res, upstream);
 }
 
 function parsePrometheus(text) {

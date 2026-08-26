@@ -34,6 +34,15 @@ function json(res, value) {
   res.end(JSON.stringify(value));
 }
 
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
 async function freePort() {
   const probe = http.createServer();
   const port = await listen(probe);
@@ -194,4 +203,103 @@ test("runtime endpoint preserves legacy capacity and understands request-aware p
   const page = await fetch(baseURL, { headers: { Authorization: auth } });
   assert.equal(page.status, 200);
   assert.match(await page.text(), /PIG capacity/);
+});
+
+test("PIG TPS policy can be adjusted directly with server-side revision handling", async (t) => {
+  let currentRevision = 7;
+  let patchAttempts = 0;
+  const receivedPatches = [];
+  const pig = http.createServer(async (req, res) => {
+    if (req.url !== "/admin/v1/predictive-policy") {
+      res.writeHead(404).end();
+      return;
+    }
+    assert.equal(req.headers.authorization, "Bearer fixture-token");
+    if (req.method === "GET") {
+      json(res, {
+        schema_version: "pig.predictive-policy.v1",
+        revision: currentRevision,
+        source: "runtime",
+        persistence: "restart_restores_startup",
+        mutable: { tps_reference: 25 },
+        effective: { admission_mode: "enforce" }
+      });
+      return;
+    }
+    if (req.method === "PATCH") {
+      patchAttempts += 1;
+      const payload = JSON.parse((await readRequestBody(req)).toString("utf8") || "{}");
+      receivedPatches.push(payload);
+      if (patchAttempts === 1) {
+        currentRevision = 8;
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "revision changed" }));
+        return;
+      }
+      assert.deepEqual(payload, { expected_revision: 8, tps_reference: 45.5 });
+      currentRevision = 9;
+      json(res, {
+        schema_version: "pig.predictive-policy.v1",
+        revision: currentRevision,
+        source: "runtime",
+        mutable: { tps_reference: payload.tps_reference },
+        effective: { admission_mode: "enforce" }
+      });
+      return;
+    }
+    res.writeHead(405).end();
+  });
+  const pigPort = await listen(pig);
+  t.after(() => close(pig));
+
+  const upstreams = [
+    { name: "use1-4c", enabled: true, base_url: `http://127.0.0.1:${pigPort}`, models: { model: "model" } }
+  ];
+  const gateway = http.createServer((req, res) => {
+    if (req.url === "/v1/admin/upstreams") return json(res, { upstreams });
+    res.writeHead(404).end();
+  });
+  const gatewayPort = await listen(gateway);
+  t.after(() => close(gateway));
+
+  const adminPort = await freePort();
+  const username = "tester";
+  const password = "integration-secret";
+  const auth = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
+  const output = [];
+  const child = spawn(process.execPath, ["server.js"], {
+    cwd: path.resolve(__dirname, ".."),
+    env: {
+      ...process.env,
+      PORT: String(adminPort),
+      BASIC_AUTH_USER: username,
+      BASIC_AUTH_PASSWORD_SHA256: crypto.createHash("sha256").update(password).digest("hex"),
+      GATEWAY_ADMIN_TOKEN: "fixture-token",
+      METRICS_TIMEOUT_MS: "1000",
+      ROUTERS_JSON: JSON.stringify([{ id: "fixture", label: "Fixture", url: `http://127.0.0.1:${gatewayPort}` }])
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  child.stdout.on("data", (chunk) => output.push(chunk.toString()));
+  child.stderr.on("data", (chunk) => output.push(chunk.toString()));
+  t.after(() => {
+    if (child.exitCode === null) child.kill("SIGTERM");
+  });
+
+  const baseURL = `http://127.0.0.1:${adminPort}`;
+  await waitForJSON(`${baseURL}/api/health`, { Authorization: auth }, child, output);
+
+  const response = await fetch(`${baseURL}/api/pig-policy?router=fixture&node=use1-4c`, {
+    method: "PATCH",
+    headers: { Authorization: auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ tps_reference: 45.5 })
+  });
+  assert.equal(response.status, 200);
+  const policy = await response.json();
+  assert.equal(policy.revision, 9);
+  assert.equal(policy.mutable.tps_reference, 45.5);
+  assert.deepEqual(receivedPatches, [
+    { expected_revision: 7, tps_reference: 45.5 },
+    { expected_revision: 8, tps_reference: 45.5 }
+  ]);
 });

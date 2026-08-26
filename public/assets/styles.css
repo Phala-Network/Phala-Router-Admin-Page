@@ -498,7 +498,7 @@ td:nth-child(7) { width: 135px; }
 th:nth-child(8),
 td:nth-child(8) { width: 150px; }
 th:nth-child(9),
-td:nth-child(9) { width: 148px; }
+td:nth-child(9) { width: 270px; }
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -757,7 +757,28 @@ td:nth-child(9) { width: 148px; }
 .row-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
+}
+
+.tps-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tps-input {
+  width: 84px;
+  min-height: 34px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.tps-action {
+  min-height: 34px;
+  padding: 6px 9px;
+  font-size: 12px;
 }
 
 .node-card-grid {
@@ -988,21 +1009,21 @@ body[data-theme="phala-terminal"] td {
 body[data-theme="phala-terminal"] th:nth-child(1),
 body[data-theme="phala-terminal"] td:nth-child(1) { width: 8%; }
 body[data-theme="phala-terminal"] th:nth-child(2),
-body[data-theme="phala-terminal"] td:nth-child(2) { width: 14%; }
+body[data-theme="phala-terminal"] td:nth-child(2) { width: 13%; }
 body[data-theme="phala-terminal"] th:nth-child(3),
-body[data-theme="phala-terminal"] td:nth-child(3) { width: 22%; }
+body[data-theme="phala-terminal"] td:nth-child(3) { width: 19%; }
 body[data-theme="phala-terminal"] th:nth-child(4),
 body[data-theme="phala-terminal"] td:nth-child(4),
 body[data-theme="phala-terminal"] th:nth-child(5),
 body[data-theme="phala-terminal"] td:nth-child(5),
 body[data-theme="phala-terminal"] th:nth-child(6),
-body[data-theme="phala-terminal"] td:nth-child(6) { width: 10%; }
+body[data-theme="phala-terminal"] td:nth-child(6) { width: 9%; }
 body[data-theme="phala-terminal"] th:nth-child(7),
 body[data-theme="phala-terminal"] td:nth-child(7) { width: 8%; }
 body[data-theme="phala-terminal"] th:nth-child(8),
-body[data-theme="phala-terminal"] td:nth-child(8) { width: 8%; }
+body[data-theme="phala-terminal"] td:nth-child(8) { width: 9%; }
 body[data-theme="phala-terminal"] th:nth-child(9),
-body[data-theme="phala-terminal"] td:nth-child(9) { width: 10%; }
+body[data-theme="phala-terminal"] td:nth-child(9) { width: 16%; }
 
 body[data-theme="phala-terminal"] .metric-head {
   display: grid;

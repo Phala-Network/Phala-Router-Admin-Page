@@ -19,6 +19,7 @@ let topologyPinnedNodes = new Set();
 let topologyGraphSignature = "";
 let latestPigPolicy = null;
 let latestPigPolicyNode = "";
+let pigPolicyTPSCache = new Map();
 
 const $ = (id) => document.getElementById(id);
 const THEMES = new Set(["phala-terminal", "vast-console", "clean-ops", "signal-board", "mesh-topology"]);
@@ -286,6 +287,7 @@ function renderNode(node) {
       <td><span class="pill ${escapeAttr(healthStatus)}">${escapeHTML(healthLabel)}</span>${healthReason ? `<div class="subline">${escapeHTML(healthReason)}</div>` : ""}</td>
       <td>
         <div class="row-actions">
+          ${renderDirectTPSControl(node)}
           <button data-action="load">load</button>
           <button data-action="policy">policy</button>
           <button class="danger" data-action="delete">delete</button>
@@ -349,11 +351,38 @@ function renderNodeCard(node) {
         </div>
       </div>
       <div class="row-actions node-card-actions">
+        ${renderDirectTPSControl(node)}
         <button data-action="load">load</button>
         <button data-action="policy">policy</button>
         <button class="danger" data-action="delete">delete</button>
       </div>
     </article>
+  `;
+}
+
+function pigPolicyCacheKey(nodeID, routerID = currentRouterId()) {
+  return `${routerID}::${nodeID}`;
+}
+
+function cachedPigTPSReference(nodeID) {
+  const cached = pigPolicyTPSCache.get(pigPolicyCacheKey(nodeID));
+  return Number.isFinite(cached) ? cached : null;
+}
+
+function rememberPigPolicy(nodeID, policy) {
+  const tpsReference = Number(policy?.mutable?.tps_reference);
+  if (nodeID && Number.isFinite(tpsReference)) {
+    pigPolicyTPSCache.set(pigPolicyCacheKey(nodeID), tpsReference);
+  }
+}
+
+function renderDirectTPSControl(node) {
+  const value = cachedPigTPSReference(node.name);
+  return `
+    <div class="tps-control" data-policy-node="${escapeAttr(node.name)}">
+      <input class="tps-input" data-role="tps-reference" type="number" min="0" max="1000000" step="0.1" placeholder="TPS" value="${value === null ? "" : escapeAttr(value)}" aria-label="PIG TPS reference for ${escapeAttr(node.name)}">
+      <button class="tps-action" data-action="set-tps" type="button">Set TPS</button>
+    </div>
   `;
 }
 
@@ -1504,6 +1533,7 @@ function resetPigPolicy(message) {
 function renderPigPolicy(nodeID, policy) {
   latestPigPolicy = policy || null;
   latestPigPolicyNode = nodeID || "";
+  rememberPigPolicy(nodeID, policy);
   const mutable = policy?.mutable || {};
   const effective = policy?.effective || {};
   const revision = policy?.revision ?? "";
@@ -1567,6 +1597,23 @@ async function savePigPolicy() {
     setPigPolicyMessage(err.message, "err");
     throw err;
   }
+}
+
+async function setNodeTPS(id, value) {
+  const tpsReference = Number(value);
+  if (!id) throw new Error("select a node first");
+  if (!Number.isFinite(tpsReference) || tpsReference < 0 || tpsReference > 1000000) {
+    throw new Error("TPS reference must be a finite number in [0, 1000000]");
+  }
+  const policy = await api(`/api/pig-policy?node=${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ tps_reference: tpsReference })
+  });
+  rememberPigPolicy(id, policy);
+  if (latestPigPolicyNode === id) renderPigPolicy(id, policy);
+  await refresh();
+  log(`PIG TPS updated for ${id}: tps_reference=${fmt(tpsReference)} revision=${fmt(policy?.revision)}`, "ok");
+  return policy;
 }
 
 function newNode() {
@@ -1705,6 +1752,10 @@ $("app-main").addEventListener("click", async (event) => {
       await readPigPolicy();
     }
     if (button.dataset.action === "toggle") await setEnabled(id, !(node && node.enabled));
+    if (button.dataset.action === "set-tps") {
+      const input = container.querySelector('input[data-role="tps-reference"]');
+      await setNodeTPS(id, input ? input.value : "");
+    }
     if (button.dataset.action === "delete") await deleteNode(id);
   } catch (err) {
     log(err.message, "err");
