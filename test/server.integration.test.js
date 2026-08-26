@@ -236,7 +236,7 @@ test("PIG TPS policy can be adjusted directly with server-side revision handling
         res.end(JSON.stringify({ error: "revision changed" }));
         return;
       }
-      assert.deepEqual(payload, { expected_revision: 8, tps_reference: 45.5 });
+      assert.deepEqual(payload, { expected_revision: 8, tps_reference: 46 });
       currentRevision = 9;
       json(res, {
         schema_version: "pig.predictive-policy.v1",
@@ -292,14 +292,23 @@ test("PIG TPS policy can be adjusted directly with server-side revision handling
   const response = await fetch(`${baseURL}/api/pig-policy?router=fixture&node=use1-4c`, {
     method: "PATCH",
     headers: { Authorization: auth, "Content-Type": "application/json" },
-    body: JSON.stringify({ tps_reference: 45.5 })
+    body: JSON.stringify({ tps_reference: 46 })
   });
   assert.equal(response.status, 200);
   const policy = await response.json();
   assert.equal(policy.revision, 9);
-  assert.equal(policy.mutable.tps_reference, 45.5);
+  assert.equal(policy.mutable.tps_reference, 46);
   assert.deepEqual(receivedPatches, [
-    { expected_revision: 7, tps_reference: 45.5 },
-    { expected_revision: 8, tps_reference: 45.5 }
+    { expected_revision: 7, tps_reference: 46 },
+    { expected_revision: 8, tps_reference: 46 }
   ]);
+
+  const rejected = await fetch(`${baseURL}/api/pig-policy?router=fixture&node=use1-4c`, {
+    method: "PATCH",
+    headers: { Authorization: auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ tps_reference: 46.5 })
+  });
+  assert.equal(rejected.status, 502);
+  assert.match(await rejected.text(), /integer/);
+  assert.equal(patchAttempts, 2);
 });

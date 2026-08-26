@@ -288,9 +288,11 @@ function renderNode(node) {
       <td>
         <div class="row-actions">
           ${renderDirectTPSControl(node)}
-          <button data-action="load">load</button>
-          <button data-action="policy">policy</button>
-          <button class="danger" data-action="delete">delete</button>
+          <div class="node-action-buttons">
+            <button data-action="load">load</button>
+            <button data-action="policy">policy</button>
+            <button class="danger" data-action="delete">delete</button>
+          </div>
         </div>
       </td>
     </tr>
@@ -352,9 +354,11 @@ function renderNodeCard(node) {
       </div>
       <div class="row-actions node-card-actions">
         ${renderDirectTPSControl(node)}
-        <button data-action="load">load</button>
-        <button data-action="policy">policy</button>
-        <button class="danger" data-action="delete">delete</button>
+        <div class="node-action-buttons">
+          <button data-action="load">load</button>
+          <button data-action="policy">policy</button>
+          <button class="danger" data-action="delete">delete</button>
+        </div>
       </div>
     </article>
   `;
@@ -371,7 +375,7 @@ function cachedPigTPSReference(nodeID) {
 
 function rememberPigPolicy(nodeID, policy) {
   const tpsReference = Number(policy?.mutable?.tps_reference);
-  if (nodeID && Number.isFinite(tpsReference)) {
+  if (nodeID && Number.isInteger(tpsReference)) {
     pigPolicyTPSCache.set(pigPolicyCacheKey(nodeID), tpsReference);
   }
 }
@@ -380,8 +384,8 @@ function renderDirectTPSControl(node) {
   const value = cachedPigTPSReference(node.name);
   return `
     <div class="tps-control" data-policy-node="${escapeAttr(node.name)}">
-      <input class="tps-input" data-role="tps-reference" type="number" min="0" max="1000000" step="0.1" placeholder="TPS" value="${value === null ? "" : escapeAttr(value)}" aria-label="PIG TPS reference for ${escapeAttr(node.name)}">
-      <button class="tps-action" data-action="set-tps" type="button">Set TPS</button>
+      <input class="tps-input" data-role="tps-reference" type="number" min="0" max="1000000" step="1" inputmode="numeric" placeholder="TPS" value="${value === null ? "" : escapeAttr(value)}" aria-label="PIG TPS reference for ${escapeAttr(node.name)}">
+      <button class="tps-action" data-action="set-tps" type="button" aria-label="Set integer PIG TPS reference for ${escapeAttr(node.name)}">Set</button>
     </div>
   `;
 }
@@ -1576,11 +1580,8 @@ async function readPigPolicy() {
 async function savePigPolicy() {
   const nodeID = selectedPolicyNodeID();
   const revision = Number(latestPigPolicy?.revision || $("pig-policy-revision").dataset.revision);
-  const tpsReference = Number($("pig-tps-reference").value);
   if (!nodeID) throw new Error("select a node first");
-  if (!Number.isFinite(tpsReference) || tpsReference < 0 || tpsReference > 1000000) {
-    throw new Error("TPS reference must be a finite number in [0, 1000000]");
-  }
+  const tpsReference = parseTPSReferenceInput($("pig-tps-reference").value);
   setPigPolicyButtons(true);
   setPigPolicyMessage("applying policy...");
   try {
@@ -1601,12 +1602,19 @@ async function savePigPolicy() {
   }
 }
 
-async function setNodeTPS(id, value) {
-  const tpsReference = Number(value);
-  if (!id) throw new Error("select a node first");
-  if (!Number.isFinite(tpsReference) || tpsReference < 0 || tpsReference > 1000000) {
-    throw new Error("TPS reference must be a finite number in [0, 1000000]");
+function parseTPSReferenceInput(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) throw new Error("TPS reference must be an integer in [0, 1000000]");
+  const tpsReference = Number(raw);
+  if (!Number.isInteger(tpsReference) || tpsReference < 0 || tpsReference > 1000000) {
+    throw new Error("TPS reference must be an integer in [0, 1000000]");
   }
+  return tpsReference;
+}
+
+async function setNodeTPS(id, value) {
+  const tpsReference = parseTPSReferenceInput(value);
+  if (!id) throw new Error("select a node first");
   const policy = await api(`/api/pig-policy?node=${encodeURIComponent(id)}`, {
     method: "PATCH",
     body: JSON.stringify({ tps_reference: tpsReference })

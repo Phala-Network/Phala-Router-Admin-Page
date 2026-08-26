@@ -755,30 +755,47 @@ td:nth-child(9) { width: 270px; }
 }
 
 .row-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
+  align-items: stretch;
+  min-width: 0;
 }
 
 .tps-control {
-  display: inline-flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
   gap: 6px;
+  width: 100%;
   min-width: 0;
 }
 
 .tps-input {
-  width: 84px;
+  width: 100%;
+  min-width: 0;
   min-height: 34px;
   padding: 6px 8px;
   font-size: 12px;
+  text-align: right;
 }
 
 .tps-action {
   min-height: 34px;
-  padding: 6px 9px;
+  padding: 6px 10px;
   font-size: 12px;
+}
+
+.node-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.node-action-buttons button {
+  flex: 1 1 58px;
+  min-width: 0;
 }
 
 .node-card-grid {
@@ -858,7 +875,22 @@ td:nth-child(9) { width: 270px; }
 }
 
 .node-card-actions {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+}
+
+.node-card-actions .node-action-buttons {
   justify-content: flex-end;
+}
+
+.node-card-actions .node-action-buttons button {
+  flex: 0 1 auto;
+}
+
+@media (min-width: 1500px) {
+  .node-card-actions {
+    grid-template-columns: minmax(126px, 170px) minmax(0, 1fr);
+  }
 }
 
 .topology-canvas {

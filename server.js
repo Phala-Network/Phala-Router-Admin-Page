@@ -244,9 +244,12 @@ function parseJSONBody(buffer, label) {
 }
 
 function normalizeTPSReference(value) {
+  if (typeof value === "string" && value.trim() === "") {
+    throw new Error("TPS reference must be an integer in [0, 1000000]");
+  }
   const tpsReference = Number(value);
-  if (!Number.isFinite(tpsReference) || tpsReference < 0 || tpsReference > 1000000) {
-    throw new Error("TPS reference must be a finite number in [0, 1000000]");
+  if (!Number.isInteger(tpsReference) || tpsReference < 0 || tpsReference > 1000000) {
+    throw new Error("TPS reference must be an integer in [0, 1000000]");
   }
   return tpsReference;
 }
@@ -340,8 +343,9 @@ async function proxyPigPolicy(req, res, router, url) {
       throw new Error("PIG policy request body must be a JSON object");
     }
     const tpsReference = normalizeTPSReference(input.tps_reference);
+    const payload = { ...input, tps_reference: tpsReference };
     if (Object.hasOwn(input, "expected_revision")) {
-      upstream = await pigPolicyRequest(baseURL, "PATCH", input);
+      upstream = await pigPolicyRequest(baseURL, "PATCH", payload);
     } else {
       upstream = await patchPigPolicyDirect(baseURL, tpsReference);
     }
