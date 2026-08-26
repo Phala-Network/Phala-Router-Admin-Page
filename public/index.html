@@ -100,6 +100,42 @@
         <button id="load-btn" type="button">Load selected</button>
         <button id="raw-btn" type="button">Edit raw</button>
       </div>
+      <div class="pig-policy-panel">
+        <div class="pig-policy-head">
+          <div>
+            <div class="pig-policy-title">PIG runtime policy</div>
+            <div id="pig-policy-target" class="subline mono">select a node</div>
+          </div>
+          <div class="pig-policy-actions">
+            <button id="pig-policy-refresh-btn" type="button">Read policy</button>
+            <button id="pig-policy-save-btn" class="primary" type="button">Apply TPS</button>
+          </div>
+        </div>
+        <div class="pig-policy-grid">
+          <label>TPS reference<input id="pig-tps-reference" type="number" min="0" max="1000000" step="0.1" placeholder="-"></label>
+          <div class="policy-fact">
+            <span>Revision</span>
+            <strong id="pig-policy-revision" class="mono">-</strong>
+          </div>
+          <div class="policy-fact">
+            <span>Source</span>
+            <strong id="pig-policy-source" class="mono">-</strong>
+          </div>
+          <div class="policy-fact">
+            <span>Mode</span>
+            <strong id="pig-policy-mode" class="mono">-</strong>
+          </div>
+          <div class="policy-fact">
+            <span>Poll</span>
+            <strong id="pig-policy-poll" class="mono">-</strong>
+          </div>
+          <div class="policy-fact">
+            <span>Max age</span>
+            <strong id="pig-policy-age" class="mono">-</strong>
+          </div>
+        </div>
+        <div id="pig-policy-message" class="subline mono"></div>
+      </div>
     </section>
 
     <section class="panel layout-raw">

@@ -17,6 +17,8 @@ let topologyResizeObserver = null;
 let topologyNodePositions = new Map();
 let topologyPinnedNodes = new Set();
 let topologyGraphSignature = "";
+let latestPigPolicy = null;
+let latestPigPolicyNode = "";
 
 const $ = (id) => document.getElementById(id);
 const THEMES = new Set(["phala-terminal", "vast-console", "clean-ops", "signal-board", "mesh-topology"]);
@@ -140,6 +142,7 @@ function pct(value, limit) {
 }
 
 function metricLevel(value, limit, options = {}) {
+  if (options.unavailable) return "pressure";
   const waiting = Number(options.waiting || 0);
   if (Number.isFinite(waiting) && waiting > 0) return "pressure";
   const p = pct(value, limit);
@@ -151,16 +154,23 @@ function metricLevel(value, limit, options = {}) {
 function meter(value, limit, subline, options = {}) {
   const waiting = Number(options.waiting || 0);
   const hasPressure = Number.isFinite(waiting) && waiting > 0;
+  const unavailable = Boolean(options.unavailable);
   const rawPct = pct(value, limit);
   const explicitPressure = options.tone === "pressure" || options.tone === "metrics_error";
-  const p = hasPressure || explicitPressure ? (rawPct > 0 ? Math.max(8, rawPct) : 100) : rawPct;
+  const p = hasPressure || explicitPressure
+    ? (rawPct > 0 ? Math.max(8, rawPct) : 100)
+    : (unavailable ? Math.max(8, rawPct) : rawPct);
   const klass = explicitPressure
     ? "pressure"
     : (options.tone === "metrics_stale" ? "yellow" : (options.tone === "healthy" ? "green" : metricLevel(value, limit, options)));
+  const chips = [];
+  if (options.chip) chips.push(`<span class="meter-chip ${escapeAttr(options.chipTone || "neutral")}">${escapeHTML(options.chip)}</span>`);
+  if (unavailable) chips.push(`<span class="meter-chip pressure">not selectable</span>`);
+  if (hasPressure) chips.push(`<span class="meter-chip pressure">waiting ${fmt(waiting)}</span>`);
   return `
     <div class="metric-head">
       <span class="mono metric-value">${fmt(value)}${limit !== null && limit !== undefined ? " / " + fmt(limit) : ""}</span>
-      ${options.chip ? `<span class="meter-chip ${escapeAttr(options.chipTone || "neutral")}">${escapeHTML(options.chip)}</span>` : (hasPressure ? `<span class="meter-chip pressure">waiting ${fmt(waiting)}</span>` : "")}
+      ${chips.join("")}
     </div>
     <div class="bar ${klass}" style="--w:${p}%"><span></span></div>
     ${subline ? `<div class="subline mono metric-subline">${subline}</div>` : ""}
@@ -277,6 +287,7 @@ function renderNode(node) {
       <td>
         <div class="row-actions">
           <button data-action="load">load</button>
+          <button data-action="policy">policy</button>
           <button class="danger" data-action="delete">delete</button>
         </div>
       </td>
@@ -339,6 +350,7 @@ function renderNodeCard(node) {
       </div>
       <div class="row-actions node-card-actions">
         <button data-action="load">load</button>
+        <button data-action="policy">policy</button>
         <button class="danger" data-action="delete">delete</button>
       </div>
     </article>
@@ -1456,6 +1468,105 @@ function loadNode(node) {
   $("use-shared-bearer").value = String(node.use_shared_bearer !== false);
   $("path").value = node.path || "/v1/chat/completions";
   selectedId = node.name || "";
+  resetPigPolicy(node.name ? "policy not loaded" : "select a node");
+}
+
+function selectedPolicyNodeID() {
+  return selectedId || $("node-name").value.trim();
+}
+
+function setPigPolicyMessage(text, klass) {
+  const el = $("pig-policy-message");
+  el.textContent = text || "";
+  el.className = `subline mono ${klass || ""}`.trim();
+}
+
+function setPigPolicyButtons(disabled) {
+  $("pig-policy-refresh-btn").disabled = Boolean(disabled);
+  $("pig-policy-save-btn").disabled = Boolean(disabled);
+}
+
+function resetPigPolicy(message) {
+  latestPigPolicy = null;
+  latestPigPolicyNode = selectedPolicyNodeID();
+  $("pig-policy-target").textContent = latestPigPolicyNode ? latestPigPolicyNode : "select a node";
+  $("pig-tps-reference").value = "";
+  $("pig-policy-revision").textContent = "-";
+  $("pig-policy-revision").dataset.revision = "";
+  $("pig-policy-source").textContent = "-";
+  $("pig-policy-mode").textContent = "-";
+  $("pig-policy-poll").textContent = "-";
+  $("pig-policy-age").textContent = "-";
+  setPigPolicyButtons(!latestPigPolicyNode);
+  setPigPolicyMessage(message || (latestPigPolicyNode ? "policy not loaded" : "select a node"));
+}
+
+function renderPigPolicy(nodeID, policy) {
+  latestPigPolicy = policy || null;
+  latestPigPolicyNode = nodeID || "";
+  const mutable = policy?.mutable || {};
+  const effective = policy?.effective || {};
+  const revision = policy?.revision ?? "";
+  $("pig-policy-target").textContent = latestPigPolicyNode || "select a node";
+  $("pig-tps-reference").value = mutable.tps_reference ?? "";
+  $("pig-policy-revision").textContent = fmt(revision);
+  $("pig-policy-revision").dataset.revision = String(revision || "");
+  $("pig-policy-source").textContent = policy?.source || "-";
+  $("pig-policy-mode").textContent = effective.admission_mode || "-";
+  $("pig-policy-poll").textContent = Number.isFinite(Number(effective.observation_poll_interval_ms))
+    ? `${fmt(Number(effective.observation_poll_interval_ms))}ms`
+    : "-";
+  $("pig-policy-age").textContent = Number.isFinite(Number(effective.maximum_metrics_age_ms))
+    ? `${fmt(Number(effective.maximum_metrics_age_ms))}ms`
+    : "-";
+  setPigPolicyButtons(!latestPigPolicyNode);
+  const updated = policy?.updated_at ? ` updated ${policy.updated_at}` : "";
+  setPigPolicyMessage(`loaded${updated}; persistence ${policy?.persistence || "-"}`, "ok");
+}
+
+async function readPigPolicy() {
+  const nodeID = selectedPolicyNodeID();
+  if (!nodeID) {
+    resetPigPolicy("select a node first");
+    return null;
+  }
+  setPigPolicyButtons(true);
+  setPigPolicyMessage("reading policy...");
+  try {
+    const policy = await api(`/api/pig-policy?node=${encodeURIComponent(nodeID)}`);
+    renderPigPolicy(nodeID, policy);
+    return policy;
+  } catch (err) {
+    setPigPolicyButtons(false);
+    setPigPolicyMessage(err.message, "err");
+    throw err;
+  }
+}
+
+async function savePigPolicy() {
+  const nodeID = selectedPolicyNodeID();
+  const revision = Number(latestPigPolicy?.revision || $("pig-policy-revision").dataset.revision);
+  const tpsReference = Number($("pig-tps-reference").value);
+  if (!nodeID) throw new Error("select a node first");
+  if (!Number.isFinite(revision) || revision <= 0) throw new Error("read policy before applying changes");
+  if (!Number.isFinite(tpsReference) || tpsReference < 0 || tpsReference > 1000000) {
+    throw new Error("TPS reference must be a finite number in [0, 1000000]");
+  }
+  setPigPolicyButtons(true);
+  setPigPolicyMessage("applying policy...");
+  try {
+    const policy = await api(`/api/pig-policy?node=${encodeURIComponent(nodeID)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ expected_revision: revision, tps_reference: tpsReference })
+    });
+    renderPigPolicy(nodeID, policy);
+    log(`PIG policy updated for ${nodeID}: tps_reference=${fmt(tpsReference)} revision=${fmt(policy.revision)}`, "ok");
+    return policy;
+  } catch (err) {
+    setPigPolicyButtons(false);
+    setPigPolicyMessage(err.message, "err");
+    throw err;
+  }
 }
 
 function newNode() {
@@ -1464,6 +1575,7 @@ function newNode() {
   $("base-url").value = "";
   $("path").value = "/v1/chat/completions";
   applyRouterDefaults();
+  resetPigPolicy("select a node");
   log("");
   setEditorOpen(true);
   $("node-name").focus();
@@ -1552,6 +1664,7 @@ $("router-select").addEventListener("change", async (event) => {
   localStorage.setItem("phala-router-admin-selected", event.target.value);
   selectedId = "";
   applyRouterDefaults();
+  resetPigPolicy("select a node");
   await refresh();
 });
 
@@ -1566,6 +1679,12 @@ $("load-btn").addEventListener("click", loadSelected);
 $("raw-btn").addEventListener("click", showRawConfig);
 $("save-raw-btn").addEventListener("click", saveRaw);
 $("close-editor-btn").addEventListener("click", () => setEditorOpen(false));
+$("pig-policy-refresh-btn").addEventListener("click", () => {
+  readPigPolicy().catch((err) => log(err.message, "err"));
+});
+$("pig-policy-save-btn").addEventListener("click", () => {
+  savePigPolicy().catch((err) => log(err.message, "err"));
+});
 
 $("app-main").addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-action]");
@@ -1580,6 +1699,11 @@ $("app-main").addEventListener("click", async (event) => {
       loadNode(node);
       if (document.body.dataset.theme === "mesh-topology") setEditorOpen(true);
     }
+    if (button.dataset.action === "policy") {
+      loadNode(node);
+      if (document.body.dataset.theme === "mesh-topology") setEditorOpen(true);
+      await readPigPolicy();
+    }
     if (button.dataset.action === "toggle") await setEnabled(id, !(node && node.enabled));
     if (button.dataset.action === "delete") await deleteNode(id);
   } catch (err) {
@@ -1587,6 +1711,7 @@ $("app-main").addEventListener("click", async (event) => {
   }
 });
 
+resetPigPolicy("select a node");
 applyTheme(preferredTheme());
 
 loadRouters()

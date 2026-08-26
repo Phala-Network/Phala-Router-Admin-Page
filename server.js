@@ -233,6 +233,38 @@ async function proxyGateway(req, res, router, requestPath) {
   res.end(upstream.text);
 }
 
+async function proxyPigPolicy(req, res, router, url) {
+  const nodeID = String(url.searchParams.get("node") || "").trim();
+  if (!nodeID) throw new Error("node is required");
+  const upstreams = await getUpstreams(router);
+  const node = upstreams.find((item) => item.name === nodeID);
+  if (!node) throw new Error(`node not found: ${nodeID}`);
+  const baseURL = normalizedBaseURL(node.base_url);
+  if (!baseURL) throw new Error(`node ${nodeID} has no base_url`);
+
+  let body;
+  const headers = {
+    Authorization: `Bearer ${sharedBearerToken()}`,
+    Accept: "application/json"
+  };
+  if (req.method === "PATCH") {
+    body = await readBody(req);
+    if (body.length > 4096) throw new Error("PIG policy request body exceeds 4096 bytes");
+    headers["Content-Type"] = "application/json";
+  }
+  const upstream = await fetchWithTimeout(baseURL + "/admin/v1/predictive-policy", {
+    method: req.method,
+    headers,
+    body: body && body.length ? body : undefined
+  });
+  const text = await upstream.text();
+  res.writeHead(upstream.status, {
+    "Content-Type": upstream.headers.get("content-type") || "application/json; charset=utf-8",
+    "Cache-Control": "no-store"
+  });
+  res.end(text);
+}
+
 function parsePrometheus(text) {
   const samples = [];
   for (const raw of String(text || "").split(/\n/)) {
@@ -769,6 +801,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/api/models") {
       await proxyGateway(req, res, router, "/v1/models");
+      return;
+    }
+    if ((req.method === "GET" || req.method === "PATCH") && url.pathname === "/api/pig-policy") {
+      await proxyPigPolicy(req, res, router, url);
       return;
     }
     if (url.pathname === "/api/upstreams") {

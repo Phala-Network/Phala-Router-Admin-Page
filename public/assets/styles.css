@@ -661,6 +661,77 @@ td:nth-child(9) { width: 148px; }
   grid-column: span 2;
 }
 
+.pig-policy-panel {
+  display: grid;
+  gap: 12px;
+  margin: 0 14px 14px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+}
+
+.pig-policy-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pig-policy-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.pig-policy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pig-policy-grid {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.2fr) repeat(5, minmax(96px, 1fr));
+  gap: 10px;
+  align-items: stretch;
+}
+
+.policy-fact {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.policy-fact span {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.policy-fact strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--text);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#pig-policy-message.ok {
+  color: var(--primary);
+}
+
+#pig-policy-message.err {
+  color: var(--red);
+}
+
 #raw-json {
   width: calc(100% - 28px);
   min-height: 190px;
@@ -1241,6 +1312,14 @@ body[data-theme="mesh-topology"] #save-btn {
   grid-column: auto;
 }
 
+body[data-theme="mesh-topology"] .pig-policy-grid {
+  grid-template-columns: 1fr 1fr;
+}
+
+body[data-theme="mesh-topology"] .pig-policy-grid label {
+  grid-column: 1 / -1;
+}
+
 body[data-theme="mesh-topology"] .layout-nodes table {
   min-width: 1180px;
 }
@@ -1288,6 +1367,14 @@ body[data-theme="mesh-topology"] .layout-nodes table {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
+  .pig-policy-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .pig-policy-grid label {
+    grid-column: 1 / -1;
+  }
+
   body[data-theme="clean-ops"] .summary-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
@@ -1320,8 +1407,21 @@ body[data-theme="mesh-topology"] .layout-nodes table {
   }
 
   .router-control,
-  .form-grid {
+  .form-grid,
+  .pig-policy-grid {
     grid-template-columns: 1fr;
+  }
+
+  .pig-policy-head {
+    display: grid;
+  }
+
+  .pig-policy-actions {
+    justify-content: stretch;
+  }
+
+  .pig-policy-actions button {
+    flex: 1 1 0;
   }
 
   #save-btn {
