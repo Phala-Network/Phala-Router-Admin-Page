@@ -116,10 +116,21 @@
           </div>
         </div>
         <div class="pig-policy-grid">
-          <label>TPS reference<input id="pig-tps-reference" type="number" min="0" max="1000000" step="1" inputmode="numeric" placeholder="-"></label>
-          <div class="pig-policy-actions">
-            <button id="pig-policy-refresh-btn" type="button">Load TPS</button>
-            <button id="pig-policy-save-btn" class="primary" type="button">Save TPS</button>
+          <div class="policy-control-group">
+            <label>TPS reference<input id="pig-tps-reference" type="number" min="0" max="1000000" step="1" inputmode="numeric" placeholder="-"></label>
+            <div class="pig-policy-actions">
+              <button id="pig-policy-refresh-btn" type="button">Load TPS</button>
+              <button id="pig-policy-save-btn" class="primary" type="button">Save TPS</button>
+            </div>
+          </div>
+          <div class="policy-control-group">
+            <div class="policy-control-title">Concurrency</div>
+            <label>Window<input id="pig-window-concurrency" type="number" min="1" max="1000000" step="1" inputmode="numeric" placeholder="-"></label>
+            <label>Running limit<input id="pig-running-limit" type="number" min="0" max="1000000" step="1" inputmode="numeric" placeholder="0"></label>
+            <div class="pig-policy-actions">
+              <button id="pig-concurrency-refresh-btn" type="button">Load concurrency</button>
+              <button id="pig-concurrency-save-btn" class="primary" type="button">Save concurrency</button>
+            </div>
           </div>
           <div class="policy-fact">
             <span>Revision</span>
@@ -140,6 +151,10 @@
           <div class="policy-fact">
             <span>Max age</span>
             <strong id="pig-policy-age" class="mono">-</strong>
+          </div>
+          <div class="policy-fact">
+            <span>Run limit source</span>
+            <strong id="pig-running-limit-source" class="mono">-</strong>
           </div>
         </div>
         <div id="pig-policy-message" class="subline mono"></div>

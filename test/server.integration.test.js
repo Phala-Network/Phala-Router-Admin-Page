@@ -312,3 +312,106 @@ test("PIG TPS policy can be adjusted directly with server-side revision handling
   assert.match(await rejected.text(), /integer/);
   assert.equal(patchAttempts, 2);
 });
+
+test("PIG concurrency policy can be adjusted directly with server-side revision handling", async (t) => {
+  let currentRevision = 11;
+  const receivedPatches = [];
+  const pig = http.createServer(async (req, res) => {
+    if (req.url !== "/admin/v1/predictive-policy") {
+      res.writeHead(404).end();
+      return;
+    }
+    assert.equal(req.headers.authorization, "Bearer fixture-token");
+    if (req.method === "GET") {
+      json(res, {
+        schema_version: "pig.predictive-policy.v1",
+        revision: currentRevision,
+        source: "runtime",
+        persistence: "restart_restores_startup",
+        mutable: { tps_reference: 25, window_concurrency: 32, running_limit: 0 },
+        effective: { admission_mode: "enforce", running_limit_source: "runtime" }
+      });
+      return;
+    }
+    if (req.method === "PATCH") {
+      const payload = JSON.parse((await readRequestBody(req)).toString("utf8") || "{}");
+      receivedPatches.push(payload);
+      assert.deepEqual(payload, { expected_revision: 11, window_concurrency: 48, running_limit: 64 });
+      currentRevision = 12;
+      json(res, {
+        schema_version: "pig.predictive-policy.v1",
+        revision: currentRevision,
+        source: "runtime",
+        mutable: {
+          tps_reference: 25,
+          window_concurrency: payload.window_concurrency,
+          running_limit: payload.running_limit
+        },
+        effective: { admission_mode: "enforce", running_limit_source: "runtime" }
+      });
+      return;
+    }
+    res.writeHead(405).end();
+  });
+  const pigPort = await listen(pig);
+  t.after(() => close(pig));
+
+  const upstreams = [
+    { name: "use1-4c", enabled: true, base_url: `http://127.0.0.1:${pigPort}`, models: { model: "model" } }
+  ];
+  const gateway = http.createServer((req, res) => {
+    if (req.url === "/v1/admin/upstreams") return json(res, { upstreams });
+    res.writeHead(404).end();
+  });
+  const gatewayPort = await listen(gateway);
+  t.after(() => close(gateway));
+
+  const adminPort = await freePort();
+  const username = "tester";
+  const password = "integration-secret";
+  const auth = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
+  const output = [];
+  const child = spawn(process.execPath, ["server.js"], {
+    cwd: path.resolve(__dirname, ".."),
+    env: {
+      ...process.env,
+      PORT: String(adminPort),
+      BASIC_AUTH_USER: username,
+      BASIC_AUTH_PASSWORD_SHA256: crypto.createHash("sha256").update(password).digest("hex"),
+      GATEWAY_ADMIN_TOKEN: "fixture-token",
+      METRICS_TIMEOUT_MS: "1000",
+      ROUTERS_JSON: JSON.stringify([{ id: "fixture", label: "Fixture", url: `http://127.0.0.1:${gatewayPort}` }])
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  child.stdout.on("data", (chunk) => output.push(chunk.toString()));
+  child.stderr.on("data", (chunk) => output.push(chunk.toString()));
+  t.after(() => {
+    if (child.exitCode === null) child.kill("SIGTERM");
+  });
+
+  const baseURL = `http://127.0.0.1:${adminPort}`;
+  await waitForJSON(`${baseURL}/api/health`, { Authorization: auth }, child, output);
+
+  const response = await fetch(`${baseURL}/api/pig-policy?router=fixture&node=use1-4c`, {
+    method: "PATCH",
+    headers: { Authorization: auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ window_concurrency: 48, running_limit: 64 })
+  });
+  assert.equal(response.status, 200);
+  const policy = await response.json();
+  assert.equal(policy.revision, 12);
+  assert.equal(policy.mutable.window_concurrency, 48);
+  assert.equal(policy.mutable.running_limit, 64);
+  assert.deepEqual(receivedPatches, [
+    { expected_revision: 11, window_concurrency: 48, running_limit: 64 }
+  ]);
+
+  const rejected = await fetch(`${baseURL}/api/pig-policy?router=fixture&node=use1-4c`, {
+    method: "PATCH",
+    headers: { Authorization: auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ window_concurrency: 0, running_limit: 64 })
+  });
+  assert.equal(rejected.status, 502);
+  assert.match(await rejected.text(), /Window concurrency/);
+});

@@ -254,6 +254,34 @@ function normalizeTPSReference(value) {
   return tpsReference;
 }
 
+function normalizeOptionalInteger(value, label, min, max) {
+  if (value === undefined) return undefined;
+  if (typeof value === "string" && value.trim() === "") {
+    throw new Error(`${label} must be an integer in [${min}, ${max}]`);
+  }
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < min || number > max) {
+    throw new Error(`${label} must be an integer in [${min}, ${max}]`);
+  }
+  return number;
+}
+
+function normalizePigPolicyPatch(input) {
+  const payload = { ...input };
+  const hasTPS = Object.hasOwn(input, "tps_reference");
+  const hasWindowConcurrency = Object.hasOwn(input, "window_concurrency");
+  const hasRunningLimit = Object.hasOwn(input, "running_limit");
+  if (!hasTPS && !hasWindowConcurrency && !hasRunningLimit) {
+    throw new Error("PIG policy patch must include tps_reference, window_concurrency, or running_limit");
+  }
+  if (hasTPS) payload.tps_reference = normalizeTPSReference(input.tps_reference);
+  if (hasWindowConcurrency) {
+    payload.window_concurrency = normalizeOptionalInteger(input.window_concurrency, "Window concurrency", 1, 1000000);
+  }
+  if (hasRunningLimit) payload.running_limit = normalizeOptionalInteger(input.running_limit, "Running limit", 0, 1000000);
+  return payload;
+}
+
 function parsePolicyJSON(response) {
   try {
     const data = response.text ? JSON.parse(response.text) : {};
@@ -301,15 +329,12 @@ async function readPigPolicyFromNode(baseURL) {
   return policy;
 }
 
-async function patchPigPolicyDirect(baseURL, tpsReference) {
+async function patchPigPolicyDirect(baseURL, patch) {
   let latestResponse = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const policy = await readPigPolicyFromNode(baseURL);
     const revision = Number(policy.revision);
-    latestResponse = await pigPolicyRequest(baseURL, "PATCH", {
-      expected_revision: revision,
-      tps_reference: tpsReference
-    });
+    latestResponse = await pigPolicyRequest(baseURL, "PATCH", { ...patch, expected_revision: revision });
     if (latestResponse.status !== 409) return latestResponse;
   }
   return latestResponse;
@@ -342,12 +367,11 @@ async function proxyPigPolicy(req, res, router, url) {
     if (!input || typeof input !== "object" || Array.isArray(input)) {
       throw new Error("PIG policy request body must be a JSON object");
     }
-    const tpsReference = normalizeTPSReference(input.tps_reference);
-    const payload = { ...input, tps_reference: tpsReference };
+    const payload = normalizePigPolicyPatch(input);
     if (Object.hasOwn(input, "expected_revision")) {
       upstream = await pigPolicyRequest(baseURL, "PATCH", payload);
     } else {
-      upstream = await patchPigPolicyDirect(baseURL, tpsReference);
+      upstream = await patchPigPolicyDirect(baseURL, payload);
     }
   } else {
     upstream = await pigPolicyRequest(baseURL, req.method);

@@ -1663,6 +1663,8 @@ function setPigPolicyMessage(text, klass) {
 function setPigPolicyButtons(disabled) {
   $("pig-policy-refresh-btn").disabled = Boolean(disabled);
   $("pig-policy-save-btn").disabled = Boolean(disabled);
+  $("pig-concurrency-refresh-btn").disabled = Boolean(disabled);
+  $("pig-concurrency-save-btn").disabled = Boolean(disabled);
 }
 
 function resetPigPolicy(message) {
@@ -1670,12 +1672,15 @@ function resetPigPolicy(message) {
   latestPigPolicyNode = selectedPolicyNodeID();
   $("pig-policy-target").textContent = latestPigPolicyNode ? latestPigPolicyNode : "select a node";
   $("pig-tps-reference").value = "";
+  $("pig-window-concurrency").value = "";
+  $("pig-running-limit").value = "";
   $("pig-policy-revision").textContent = "-";
   $("pig-policy-revision").dataset.revision = "";
   $("pig-policy-source").textContent = "-";
   $("pig-policy-mode").textContent = "-";
   $("pig-policy-poll").textContent = "-";
   $("pig-policy-age").textContent = "-";
+  $("pig-running-limit-source").textContent = "-";
   setPigPolicyButtons(!latestPigPolicyNode);
   setPigPolicyMessage(message || (latestPigPolicyNode ? "policy not loaded" : "select a node"));
 }
@@ -1689,6 +1694,8 @@ function renderPigPolicy(nodeID, policy) {
   const revision = policy?.revision ?? "";
   $("pig-policy-target").textContent = latestPigPolicyNode || "select a node";
   $("pig-tps-reference").value = mutable.tps_reference ?? "";
+  $("pig-window-concurrency").value = mutable.window_concurrency ?? "";
+  $("pig-running-limit").value = mutable.running_limit ?? "";
   $("pig-policy-revision").textContent = fmt(revision);
   $("pig-policy-revision").dataset.revision = String(revision || "");
   $("pig-policy-source").textContent = policy?.source || "-";
@@ -1699,6 +1706,7 @@ function renderPigPolicy(nodeID, policy) {
   $("pig-policy-age").textContent = Number.isFinite(Number(effective.maximum_metrics_age_ms))
     ? `${fmt(Number(effective.maximum_metrics_age_ms))}ms`
     : "-";
+  $("pig-running-limit-source").textContent = effective.running_limit_source || "-";
   setPigPolicyButtons(!latestPigPolicyNode);
   const updated = policy?.updated_at ? ` updated ${policy.updated_at}` : "";
   setPigPolicyMessage(`loaded${updated}; persistence ${policy?.persistence || "-"}`, "ok");
@@ -1748,14 +1756,44 @@ async function savePigPolicy() {
   }
 }
 
-function parseTPSReferenceInput(value) {
-  const raw = String(value ?? "").trim();
-  if (!raw) throw new Error("TPS reference must be an integer in [0, 1000000]");
-  const tpsReference = Number(raw);
-  if (!Number.isInteger(tpsReference) || tpsReference < 0 || tpsReference > 1000000) {
-    throw new Error("TPS reference must be an integer in [0, 1000000]");
+async function savePigConcurrency() {
+  const nodeID = selectedPolicyNodeID();
+  const revision = Number(latestPigPolicy?.revision || $("pig-policy-revision").dataset.revision);
+  if (!nodeID) throw new Error("select a node first");
+  const windowConcurrency = parsePolicyIntegerInput($("pig-window-concurrency").value, "Window concurrency", 1, 1000000);
+  const runningLimit = parsePolicyIntegerInput($("pig-running-limit").value, "Running limit", 0, 1000000);
+  setPigPolicyButtons(true);
+  setPigPolicyMessage("applying concurrency...");
+  try {
+    const payload = Number.isFinite(revision) && revision > 0
+      ? { expected_revision: revision, window_concurrency: windowConcurrency, running_limit: runningLimit }
+      : { window_concurrency: windowConcurrency, running_limit: runningLimit };
+    const policy = await api(`/api/pig-policy?node=${encodeURIComponent(nodeID)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    });
+    renderPigPolicy(nodeID, policy);
+    log(`PIG concurrency updated for ${nodeID}: window_concurrency=${fmt(windowConcurrency)} running_limit=${fmt(runningLimit)} revision=${fmt(policy.revision)}`, "ok");
+    return policy;
+  } catch (err) {
+    setPigPolicyButtons(false);
+    setPigPolicyMessage(err.message, "err");
+    throw err;
   }
-  return tpsReference;
+}
+
+function parseTPSReferenceInput(value) {
+  return parsePolicyIntegerInput(value, "TPS reference", 0, 1000000);
+}
+
+function parsePolicyIntegerInput(value, label, min, max) {
+  const raw = String(value ?? "").trim();
+  if (!raw) throw new Error(`${label} must be an integer in [${min}, ${max}]`);
+  const number = Number(raw);
+  if (!Number.isInteger(number) || number < min || number > max) {
+    throw new Error(`${label} must be an integer in [${min}, ${max}]`);
+  }
+  return number;
 }
 
 async function setNodeTPS(id, value) {
@@ -1892,6 +1930,12 @@ $("pig-policy-refresh-btn").addEventListener("click", () => {
 });
 $("pig-policy-save-btn").addEventListener("click", () => {
   savePigPolicy().catch((err) => log(err.message, "err"));
+});
+$("pig-concurrency-refresh-btn").addEventListener("click", () => {
+  readPigPolicy().catch((err) => log(err.message, "err"));
+});
+$("pig-concurrency-save-btn").addEventListener("click", () => {
+  savePigConcurrency().catch((err) => log(err.message, "err"));
 });
 
 $("app-main").addEventListener("click", async (event) => {

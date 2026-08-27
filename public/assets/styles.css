@@ -322,7 +322,7 @@ body.editor-open .drawer-arrow {
 
 .workspace-drawer-content {
   display: grid;
-  grid-template-columns: minmax(330px, 440px) minmax(420px, 1fr);
+  grid-template-columns: minmax(470px, 560px) minmax(420px, 1fr);
   gap: 14px;
   height: calc(100% - 42px);
   min-height: 0;
@@ -854,9 +854,36 @@ td:nth-child(9) { width: 180px; }
 
 .pig-policy-grid {
   display: grid;
-  grid-template-columns: minmax(150px, 1.2fr) repeat(5, minmax(96px, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
   align-items: stretch;
+}
+
+.policy-control-group {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 9px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.policy-control-group:first-child,
+.policy-control-group:nth-child(2) {
+  grid-column: span 3;
+}
+
+.policy-control-title {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.policy-control-group label {
+  min-width: 0;
 }
 
 .policy-fact {
@@ -1377,10 +1404,13 @@ body[data-theme="signal-board"] .pig-policy-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-body[data-theme="phala-terminal"] .pig-policy-grid label,
-body[data-theme="vast-console"] .pig-policy-grid label,
-body[data-theme="signal-board"] .pig-policy-grid label {
-  grid-column: 1 / -1;
+body[data-theme="phala-terminal"] .policy-control-group:first-child,
+body[data-theme="phala-terminal"] .policy-control-group:nth-child(2),
+body[data-theme="vast-console"] .policy-control-group:first-child,
+body[data-theme="vast-console"] .policy-control-group:nth-child(2),
+body[data-theme="signal-board"] .policy-control-group:first-child,
+body[data-theme="signal-board"] .policy-control-group:nth-child(2) {
+  grid-column: auto;
 }
 
 body[data-theme="vast-console"] .summary-grid {
@@ -1693,11 +1723,7 @@ body[data-theme="mesh-topology"] #save-btn {
 }
 
 body[data-theme="mesh-topology"] .pig-policy-grid {
-  grid-template-columns: 1fr 1fr;
-}
-
-body[data-theme="mesh-topology"] .pig-policy-grid label {
-  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 body[data-theme="mesh-topology"] .layout-nodes table {
@@ -1759,7 +1785,8 @@ body[data-theme="mesh-topology"] .layout-nodes table {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .pig-policy-grid label {
+  .policy-control-group:first-child,
+  .policy-control-group:nth-child(2) {
     grid-column: 1 / -1;
   }
 
