@@ -87,6 +87,25 @@ function pigForDeployment(id) {
   return pigNodes.find((node) => String(node.deployment_id) === String(id))?.pig || null;
 }
 
+function pigLimit(pig) {
+  const candidates = [
+    pig?.effective_limit,
+    pig?.global_limit,
+    pig?.admission_limit,
+    pig?.hard_global_limit,
+    pig?.basic_limit,
+    pig?.capacity_limit,
+    pig?.capacity_safe_limit,
+    pig?.capacity_target_limit,
+    pig?.capacity_learned_limit
+  ];
+  for (const value of candidates) {
+    const number = Number(value);
+    if (Number.isFinite(number) && number > 0) return number;
+  }
+  return null;
+}
+
 function selectedPigNode() {
   if (!selectedDeployment) return null;
   return pigNodes.find((node) => String(node.deployment_id) === String(selectedDeployment.id)) || null;
@@ -129,11 +148,12 @@ function pigSummary() {
     const value = Number(node.pig?.[key]);
     return Number.isFinite(value) ? total + value : total;
   }, 0);
+  const knownLimits = activeNodes.map((node) => pigLimit(node.pig)).filter((value) => Number.isFinite(value) && value > 0);
   return {
     status,
     running: sum("running"),
     waiting: sum("waiting"),
-    limit: sum("global_limit"),
+    limit: knownLimits.length > 0 ? knownLimits.reduce((total, value) => total + value, 0) : null,
     green_nodes: activeNodes.filter((node) => node.pig?.status === "green").length,
     yellow_nodes: activeNodes.filter((node) => node.pig?.status === "yellow").length,
     red_nodes: activeNodes.filter((node) => node.pig?.status === "red").length,
@@ -231,7 +251,7 @@ function renderDeployments() {
     const pig = pigForDeployment(deployment.id);
     const tone = deploymentTone(deployment);
     const running = pig?.running;
-    const limit = pig?.global_limit;
+    const limit = pigLimit(pig);
     const waiting = pig?.waiting;
     return `
       <tr class="${selected ? "selected" : ""}" data-deployment-id="${escapeAttr(deployment.id)}">

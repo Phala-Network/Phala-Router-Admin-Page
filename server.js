@@ -641,9 +641,17 @@ function pigStatus(metrics) {
   if (metrics.waiting > 0 || metrics.queue_current > 0 || metrics.state === "red" || (metrics.backend_count > 0 && metrics.backend_failed >= metrics.backend_count)) {
     return "red";
   }
-  if (nearLimit(metrics.running, metrics.global_limit) || nearLimit(metrics.basic_inflight, metrics.basic_limit)) return "yellow";
+  if (nearLimit(metrics.running, metrics.effective_limit) || nearLimit(metrics.basic_inflight, metrics.basic_limit)) return "yellow";
   if (metrics.state === "yellow") return "yellow";
   return "green";
+}
+
+function firstPositiveNumber(...values) {
+  for (const value of values) {
+    const number = Number(value);
+    if (Number.isFinite(number) && number > 0) return number;
+  }
+  return null;
 }
 
 function parsePigMetrics(text) {
@@ -683,6 +691,16 @@ function parsePigMetrics(text) {
     backend_failed: firstMetric(samples, "pig_dynamic_backend_failed"),
     updated_unix_seconds: firstMetric(samples, "pig_dynamic_last_update_seconds")
   };
+  metrics.effective_limit = firstPositiveNumber(
+    metrics.global_limit,
+    metrics.admission_limit,
+    metrics.hard_global_limit,
+    metrics.basic_limit,
+    metrics.capacity_limit,
+    metrics.capacity_safe_limit,
+    metrics.capacity_target_limit,
+    metrics.capacity_learned_limit
+  );
   metrics.status = pigStatus(metrics);
   metrics.sample_count = samples.length;
   return metrics;
@@ -795,6 +813,7 @@ function summarizePigNodes(nodes) {
   const worst = statuses.includes("red") || statuses.includes("error")
     ? "red"
     : statuses.includes("yellow") ? "yellow" : active.length > 0 ? "green" : "unknown";
+  const limitNodes = active.filter((node) => Number.isFinite(Number(node.pig?.effective_limit)) && Number(node.pig.effective_limit) > 0);
   return {
     status: worst,
     total_nodes: nodes.length,
@@ -807,7 +826,7 @@ function summarizePigNodes(nodes) {
     waiting: sumNumber(active, (node) => node.pig?.waiting),
     basic_inflight: sumNumber(active, (node) => node.pig?.basic_inflight),
     premium_inflight: sumNumber(active, (node) => node.pig?.premium_inflight),
-    limit: sumNumber(active, (node) => node.pig?.global_limit)
+    limit: limitNodes.length > 0 ? sumNumber(limitNodes, (node) => node.pig?.effective_limit) : null
   };
 }
 
