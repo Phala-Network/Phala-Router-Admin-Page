@@ -15,6 +15,10 @@ let pigRefreshInFlight = false;
 let redpillRefreshInFlight = false;
 let runningHistory = [];
 let chartHover = null;
+let logExpanded = false;
+let logEntryCount = 0;
+let lastLogLine = "";
+let lastLogTone = "";
 
 const PIG_REFRESH_MS = 2000;
 const REDPILL_REFRESH_MS = 300000;
@@ -68,12 +72,30 @@ function setStatus(text, tone) {
   el.className = `status-line ${tone || ""}`.trim();
 }
 
+function updateLogDrawer() {
+  const panel = $("log-panel");
+  const button = $("log-toggle-btn");
+  const arrow = $("log-toggle-arrow");
+  const summary = $("log-toggle-summary");
+  if (!panel || !button || !arrow || !summary) return;
+  panel.classList.toggle("collapsed", !logExpanded);
+  panel.setAttribute("aria-expanded", String(logExpanded));
+  button.setAttribute("aria-expanded", String(logExpanded));
+  arrow.textContent = logExpanded ? "v" : "^";
+  summary.textContent = logEntryCount > 0 ? `${logEntryCount} entries | ${lastLogLine}` : "no entries";
+  summary.className = `log-toggle-summary ${lastLogTone || ""}`.trim();
+}
+
 function log(value, tone) {
   const stamp = new Date().toLocaleTimeString();
   const line = typeof value === "string" ? value : JSON.stringify(value, null, 2);
   const el = $("log");
   el.textContent = `[${stamp}] ${line}\n\n${el.textContent || ""}`;
   el.className = tone || "";
+  logEntryCount += 1;
+  lastLogLine = line.replace(/\s+/g, " ").slice(0, 120);
+  lastLogTone = tone || "";
+  updateLogDrawer();
 }
 
 async function api(path, options = {}) {
@@ -728,6 +750,15 @@ $("bulk-up-btn").addEventListener("click", () => bulkSetActive(true).catch((err)
 $("bulk-down-btn").addEventListener("click", () => bulkSetActive(false).catch((err) => log(err.message, "err")));
 $("clear-log-btn").addEventListener("click", () => {
   $("log").textContent = "";
+  $("log").className = "";
+  logEntryCount = 0;
+  lastLogLine = "";
+  lastLogTone = "";
+  updateLogDrawer();
+});
+$("log-toggle-btn").addEventListener("click", () => {
+  logExpanded = !logExpanded;
+  updateLogDrawer();
 });
 $("pig-policy-refresh-btn").addEventListener("click", () => readPigPolicy().catch((err) => log(err.message, "err")));
 $("pig-policy-save-btn").addEventListener("click", () => savePigPolicy().catch((err) => log(err.message, "err")));
@@ -769,4 +800,5 @@ $("running-chart").addEventListener("mouseleave", () => {
 window.addEventListener("resize", drawChart);
 
 refreshRedpill(true);
+updateLogDrawer();
 pigTimer = window.setTimeout(() => refreshPig(false), PIG_REFRESH_MS);

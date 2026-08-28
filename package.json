@@ -1,6 +1,6 @@
 {
   "name": "phala-node-admin-page",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "private": true,
   "description": "Authenticated Phala node admin page for Redpill listing state and PIG hot policy.",
   "type": "commonjs",

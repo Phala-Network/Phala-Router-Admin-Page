@@ -74,13 +74,6 @@
         <div id="pig-policy-message" class="subline mono">select a node</div>
       </section>
 
-      <section class="panel log-panel">
-        <div class="panel-title">
-          <span>Operation log</span>
-          <button id="clear-log-btn" type="button">Clear</button>
-        </div>
-        <pre id="log"></pre>
-      </section>
     </section>
 
     <section class="panel deployments-panel">
@@ -98,6 +91,21 @@
       <div id="deployments-body" class="node-list"></div>
     </section>
   </main>
+
+  <section id="log-panel" class="panel log-panel log-drawer collapsed" aria-expanded="false">
+    <button id="log-toggle-btn" class="log-toggle" type="button" aria-expanded="false" aria-controls="log-content">
+      <span id="log-toggle-arrow" class="log-arrow">^</span>
+      <span class="log-toggle-title">Operation log</span>
+      <span id="log-toggle-summary" class="log-toggle-summary">no entries</span>
+    </button>
+    <div id="log-content" class="log-content">
+      <div class="panel-title">
+        <span>Operation log</span>
+        <button id="clear-log-btn" type="button">Clear</button>
+      </div>
+      <pre id="log"></pre>
+    </div>
+  </section>
 
   <script src="/assets/app.js"></script>
 </body>

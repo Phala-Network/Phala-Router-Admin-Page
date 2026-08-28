@@ -26,10 +26,17 @@
   box-sizing: border-box;
 }
 
+html,
 body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   margin: 0;
   min-width: 1160px;
-  min-height: 100vh;
   background:
     radial-gradient(circle at 18% -10%, rgba(0, 209, 143, 0.13), transparent 34%),
     linear-gradient(180deg, rgba(91, 184, 255, 0.055), transparent 310px),
@@ -39,8 +46,6 @@ body {
 }
 
 .app-header {
-  position: sticky;
-  top: 0;
   z-index: 5;
   display: grid;
   grid-template-columns: minmax(330px, max-content) minmax(700px, 1fr);
@@ -117,9 +122,11 @@ main {
   display: grid;
   grid-template-columns: minmax(280px, 340px) minmax(620px, 1fr) minmax(300px, 360px);
   grid-template-areas: "models center deployments";
-  align-items: start;
+  align-items: stretch;
   gap: 14px;
-  padding: 18px 22px 28px;
+  min-height: 0;
+  overflow: hidden;
+  padding: 18px 22px 64px;
 }
 
 .summary-grid {
@@ -133,7 +140,11 @@ main {
   grid-area: center;
   display: grid;
   gap: 14px;
+  align-content: start;
+  height: 100%;
   min-width: 0;
+  min-height: 0;
+  overflow: auto;
 }
 .deployments-panel { grid-area: deployments; min-width: 0; }
 .chart-panel,
@@ -141,9 +152,9 @@ main {
 .log-panel { min-width: 0; }
 .model-panel,
 .deployments-panel {
-  position: sticky;
-  top: 100px;
-  align-self: start;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .panel,
@@ -297,8 +308,10 @@ button.danger {
 
 .model-list {
   display: grid;
+  align-content: start;
+  flex: 1;
   gap: 8px;
-  max-height: calc(100vh - 172px);
+  min-height: 0;
   overflow: auto;
   padding: 12px;
 }
@@ -402,8 +415,10 @@ button.danger {
 
 .node-list {
   display: grid;
+  align-content: start;
+  flex: 1;
   gap: 10px;
-  max-height: calc(100vh - 226px);
+  min-height: 0;
   overflow: auto;
   padding: 12px;
 }
@@ -711,8 +726,7 @@ td:nth-child(9) { width: 146px; }
 }
 
 #log {
-  min-height: 220px;
-  max-height: 480px;
+  height: min(40vh, 420px);
   margin: 0;
   padding: 14px;
   overflow: auto;
@@ -728,6 +742,74 @@ td:nth-child(9) { width: 146px; }
 
 #log.err {
   color: color-mix(in srgb, var(--red) 84%, var(--text));
+}
+
+.log-drawer {
+  position: fixed;
+  right: 22px;
+  bottom: 14px;
+  left: 22px;
+  z-index: 10;
+  overflow: hidden;
+  background: rgba(14, 21, 19, 0.96);
+  backdrop-filter: blur(16px);
+  transition: transform 160ms ease, border-color 160ms ease;
+}
+
+.log-drawer.collapsed {
+  transform: translateY(calc(100% - 42px));
+}
+
+.log-toggle {
+  display: grid;
+  grid-template-columns: 26px max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 0 14px;
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+  text-align: left;
+}
+
+.log-arrow {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--primary);
+  font: 800 14px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.log-toggle-title {
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 820;
+}
+
+.log-toggle-summary {
+  min-width: 0;
+  color: var(--muted);
+  font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.log-toggle-summary.ok {
+  color: color-mix(in srgb, var(--primary) 80%, var(--text));
+}
+
+.log-toggle-summary.err {
+  color: color-mix(in srgb, var(--red) 84%, var(--text));
+}
+
+.log-content {
+  display: grid;
 }
 
 .empty {
@@ -759,7 +841,7 @@ td:nth-child(9) { width: 146px; }
 
   .model-panel,
   .deployments-panel {
-    position: static;
+    min-height: 260px;
   }
 
   .header-actions,
@@ -768,9 +850,10 @@ td:nth-child(9) { width: 146px; }
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .center-stack,
   .model-list,
   .node-list {
-    max-height: none;
+    overflow: auto;
   }
 }
 
