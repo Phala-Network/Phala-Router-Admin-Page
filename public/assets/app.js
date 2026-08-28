@@ -22,7 +22,20 @@ let lastLogTone = "";
 
 const PIG_REFRESH_MS = 2000;
 const REDPILL_REFRESH_MS = 300000;
-const MAX_HISTORY_POINTS = 180;
+const CHART_WINDOW_MS = 5 * 60 * 1000;
+const MAX_HISTORY_POINTS = Math.ceil(CHART_WINDOW_MS / PIG_REFRESH_MS);
+const STACK_COLORS = [
+  "#00d18f",
+  "#5bb8ff",
+  "#ffbd4a",
+  "#b37cff",
+  "#ff7aa8",
+  "#45e0d0",
+  "#a5e85f",
+  "#ff8f4a",
+  "#8ea0ff",
+  "#f0dc5c"
+];
 
 function escapeHTML(value) {
   return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -64,6 +77,10 @@ function nodeLabel(value) {
     return parts.at(-3);
   }
   return host || "-";
+}
+
+function deploymentBaseURL(deployment) {
+  return deployment?.base_url || deployment?.config?.base_url || "";
 }
 
 function setStatus(text, tone) {
@@ -174,7 +191,7 @@ function activeDeployments() {
 function sortedDeployments(next) {
   return (next || []).slice().sort((a, b) => {
     if (Boolean(a.active) !== Boolean(b.active)) return a.active ? -1 : 1;
-    const byNode = nodeLabel(a.base_url).localeCompare(nodeLabel(b.base_url), undefined, { numeric: true, sensitivity: "base" });
+    const byNode = nodeLabel(deploymentBaseURL(a)).localeCompare(nodeLabel(deploymentBaseURL(b)), undefined, { numeric: true, sensitivity: "base" });
     if (byNode !== 0) return byNode;
     return Number(a.id) - Number(b.id);
   });
@@ -295,11 +312,11 @@ function renderDeployments() {
     const tone = deploymentTone(deployment);
     const running = pig?.running;
     return `
-      <article class="node-card ${selected ? "selected" : ""} ${deployment.active ? "" : "inactive"}" data-deployment-id="${escapeAttr(deployment.id)}" title="${escapeAttr(shortHost(deployment.base_url))}">
+      <article class="node-card ${selected ? "selected" : ""} ${deployment.active ? "" : "inactive"}" data-deployment-id="${escapeAttr(deployment.id)}" title="${escapeAttr(shortHost(deploymentBaseURL(deployment)))}">
         <div class="node-card-head">
           <input class="row-check" type="checkbox" data-action="select" ${checked ? "checked" : ""} aria-label="select deployment ${escapeAttr(deployment.id)}">
           <div class="node-card-title">
-            <div class="node-title">${escapeHTML(nodeLabel(deployment.base_url))}</div>
+            <div class="node-title">${escapeHTML(nodeLabel(deploymentBaseURL(deployment)))}</div>
           </div>
           <span class="pill ${escapeAttr(deployment.active ? "green" : "disabled")}">${deployment.active ? "up" : "down"}</span>
         </div>
@@ -325,12 +342,17 @@ function timeLabel(value) {
 }
 
 function chartGeometry(width, height) {
-  const padding = { left: 58, right: 22, top: 28, bottom: 40 };
+  const padding = { left: 58, right: 22, top: 34, bottom: 40 };
   return {
     padding,
     plotW: Math.max(1, width - padding.left - padding.right),
     plotH: Math.max(1, height - padding.top - padding.bottom)
   };
+}
+
+function colorForNode(id, fallbackIndex = 0) {
+  const index = Math.abs(String(id ?? fallbackIndex).split("").reduce((sum, ch) => sum + ch.charCodeAt(0), fallbackIndex));
+  return STACK_COLORS[index % STACK_COLORS.length];
 }
 
 function numericPointValue(point, key) {
@@ -340,7 +362,7 @@ function numericPointValue(point, key) {
 
 function maxHistoryValue() {
   return Math.max(1, ...runningHistory.map((point) => Math.max(
-    numericPointValue(point, "running") || 0,
+    numericPointValue(point, "running") || (point.nodes || []).reduce((sum, node) => sum + Number(node.running || 0), 0),
     numericPointValue(point, "limit") || 0,
     numericPointValue(point, "waiting") || 0
   )));
@@ -348,6 +370,42 @@ function maxHistoryValue() {
 
 function valueToY(value, maxValue, padding, plotH) {
   return padding.top + plotH - (plotH * Number(value || 0) / maxValue);
+}
+
+function chartTimeDomain(now = Date.now()) {
+  return { start: now - CHART_WINDOW_MS, end: now };
+}
+
+function timeToX(value, domain, padding, plotW) {
+  const ratio = (Number(value) - domain.start) / Math.max(1, domain.end - domain.start);
+  return padding.left + (plotW * Math.max(0, Math.min(1, ratio)));
+}
+
+function xToTime(value, domain, padding, plotW) {
+  const ratio = (Number(value) - padding.left) / Math.max(1, plotW);
+  return domain.start + ((domain.end - domain.start) * Math.max(0, Math.min(1, ratio)));
+}
+
+function buildHistoryPoint(summary, nodes) {
+  const nodeByID = new Map((nodes || []).map((node) => [String(node.deployment_id), node]));
+  const orderedNodes = deployments.length > 0
+    ? deployments.map((deployment) => nodeByID.get(String(deployment.id))).filter(Boolean)
+    : (nodes || []);
+  const activeNodes = orderedNodes.filter((node) => node.active);
+  const stacks = activeNodes.map((node, index) => ({
+    id: node.deployment_id,
+    label: nodeLabel(node.base_url),
+    running: Number(node.pig?.running || 0),
+    status: node.pig?.status || "unknown",
+    color: colorForNode(node.deployment_id, index)
+  }));
+  return {
+    at: Date.now(),
+    running: Number(summary?.running || stacks.reduce((sum, node) => sum + node.running, 0)),
+    waiting: Number(summary?.waiting || 0),
+    limit: Number.isFinite(Number(summary?.limit)) ? Number(summary.limit) : null,
+    nodes: stacks
+  };
 }
 
 function drawChart() {
@@ -370,6 +428,7 @@ function drawChart() {
 
   const { padding, plotW, plotH } = chartGeometry(width, height);
   const maxValue = maxHistoryValue();
+  const domain = chartTimeDomain();
   ctx.strokeStyle = "rgba(146, 170, 161, 0.22)";
   ctx.lineWidth = 1;
   ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
@@ -385,51 +444,70 @@ function drawChart() {
     ctx.fillText(String(value), 14, y + 4);
   }
 
-  for (let i = 0; i <= 4; i += 1) {
-    const x = padding.left + (plotW * i / 4);
+  for (let i = 0; i <= 5; i += 1) {
+    const x = padding.left + (plotW * i / 5);
+    const tickTime = domain.start + (CHART_WINDOW_MS * i / 5);
     ctx.beginPath();
     ctx.moveTo(x, padding.top);
     ctx.lineTo(x, height - padding.bottom);
     ctx.stroke();
-    const point = runningHistory[Math.round((runningHistory.length - 1) * i / 4)];
-    if (point) {
-      ctx.fillStyle = "rgba(197, 215, 208, 0.58)";
-      ctx.fillText(timeLabel(point.at), Math.max(8, Math.min(width - 86, x - 28)), height - 14);
-    }
+    ctx.fillStyle = "rgba(197, 215, 208, 0.58)";
+    ctx.fillText(timeLabel(tickTime), Math.max(8, Math.min(width - 86, x - 28)), height - 14);
   }
 
-  drawSeries(ctx, width, height, padding, maxValue, "limit", "rgba(145, 170, 161, 0.78)");
-  drawSeries(ctx, width, height, padding, maxValue, "running", "#00d18f");
-  drawSeries(ctx, width, height, padding, maxValue, "waiting", "#ff5263");
-  drawChartHover(ctx, width, height, padding, plotW, plotH, maxValue, tooltip);
+  drawStackedBars(ctx, width, height, padding, maxValue, domain);
+  drawLineSeries(ctx, width, height, padding, maxValue, domain, "limit", "rgba(197, 215, 208, 0.72)", [6, 5]);
+  drawLineSeries(ctx, width, height, padding, maxValue, domain, "waiting", "#ff5263");
+  drawChartHover(ctx, width, height, padding, plotW, plotH, maxValue, domain, tooltip);
 
   ctx.fillStyle = "rgba(238, 248, 244, 0.86)";
   ctx.fillText(`max ${fmt(maxValue)}`, padding.left, 18);
-  ctx.fillStyle = "#00d18f";
-  ctx.fillText("running", padding.left + 86, 18);
-  ctx.fillStyle = "#91aaa1";
-  ctx.fillText("limit", padding.left + 154, 18);
+  ctx.fillStyle = "rgba(197, 215, 208, 0.86)";
+  ctx.fillText("stacked running by node", padding.left + 86, 18);
   ctx.fillStyle = "#ff5263";
-  ctx.fillText("waiting", padding.left + 208, 18);
+  ctx.fillText("waiting", Math.min(width - 82, padding.left + 252), 18);
+  drawStackLegend(ctx, width, padding);
 }
 
-function drawSeries(ctx, width, height, padding, maxValue, key, color) {
+function drawStackedBars(ctx, width, height, padding, maxValue, domain) {
+  const points = runningHistory;
+  if (points.length === 0) return;
+  const plotW = width - padding.left - padding.right;
+  const plotH = height - padding.top - padding.bottom;
+  const step = plotW / MAX_HISTORY_POINTS;
+  const barW = Math.max(2, Math.min(12, step * 0.76));
+  points.forEach((point) => {
+    const x = timeToX(point.at, domain, padding, plotW) - (barW / 2);
+    let runningBase = 0;
+    for (const node of point.nodes || []) {
+      const value = Number(node.running || 0);
+      if (!Number.isFinite(value) || value <= 0) continue;
+      const y1 = valueToY(runningBase, maxValue, padding, plotH);
+      runningBase += value;
+      const y2 = valueToY(runningBase, maxValue, padding, plotH);
+      ctx.fillStyle = node.color || colorForNode(node.id);
+      ctx.fillRect(Math.max(padding.left, x), y2, Math.min(barW, width - padding.right - x), Math.max(1, y1 - y2));
+    }
+  });
+}
+
+function drawLineSeries(ctx, width, height, padding, maxValue, domain, key, color, dash = []) {
   const points = runningHistory;
   if (points.length < 2) return;
   const plotW = width - padding.left - padding.right;
   const plotH = height - padding.top - padding.bottom;
   ctx.strokeStyle = color;
-  ctx.lineWidth = key === "running" ? 2.2 : 1.6;
-  ctx.setLineDash(key === "limit" ? [6, 5] : []);
+  ctx.lineWidth = 1.6;
+  ctx.setLineDash(dash);
   ctx.beginPath();
   let started = false;
-  points.forEach((point, index) => {
+  points.forEach((point) => {
     const value = numericPointValue(point, key);
     if (value === null) {
       started = false;
       return;
     }
-    const x = padding.left + (plotW * index / Math.max(1, points.length - 1));
+    const x = timeToX(point.at, domain, padding, plotW);
     const y = valueToY(value, maxValue, padding, plotH);
     if (!started) {
       ctx.moveTo(x, y);
@@ -442,14 +520,50 @@ function drawSeries(ctx, width, height, padding, maxValue, key, color) {
   ctx.setLineDash([]);
 }
 
-function drawChartHover(ctx, width, height, padding, plotW, plotH, maxValue, tooltip) {
+function drawStackLegend(ctx, width, padding) {
+  const latest = runningHistory.at(-1);
+  if (!latest?.nodes?.length) return;
+  let x = padding.left;
+  let y = padding.top - 10;
+  const maxX = width - padding.right;
+  ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+  for (const node of latest.nodes.slice(0, 8)) {
+    const label = node.label || String(node.id || "-");
+    const itemW = Math.min(96, 18 + ctx.measureText(label).width);
+    if (x + itemW > maxX) break;
+    ctx.fillStyle = node.color || colorForNode(node.id);
+    ctx.fillRect(x, y - 7, 8, 8);
+    ctx.fillStyle = "rgba(197, 215, 208, 0.68)";
+    ctx.fillText(label, x + 12, y);
+    x += itemW + 10;
+  }
+}
+
+function nearestHistoryPoint(time) {
+  if (runningHistory.length === 0) return null;
+  let best = runningHistory[0];
+  let bestDistance = Math.abs(Number(best.at) - Number(time));
+  for (const point of runningHistory.slice(1)) {
+    const distance = Math.abs(Number(point.at) - Number(time));
+    if (distance < bestDistance) {
+      best = point;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+function drawChartHover(ctx, width, height, padding, plotW, plotH, maxValue, domain, tooltip) {
   if (!tooltip || !chartHover || runningHistory.length === 0) {
     if (tooltip) tooltip.hidden = true;
     return;
   }
-  const index = Math.max(0, Math.min(runningHistory.length - 1, chartHover.index));
-  const point = runningHistory[index];
-  const x = padding.left + (plotW * index / Math.max(1, runningHistory.length - 1));
+  const point = nearestHistoryPoint(chartHover.time);
+  if (!point) {
+    tooltip.hidden = true;
+    return;
+  }
+  const x = timeToX(point.at, domain, padding, plotW);
   const y = Math.max(padding.top, Math.min(height - padding.bottom, chartHover.y));
   ctx.strokeStyle = "rgba(238, 248, 244, 0.42)";
   ctx.lineWidth = 1;
@@ -462,7 +576,7 @@ function drawChartHover(ctx, width, height, padding, plotW, plotH, maxValue, too
   ctx.stroke();
   ctx.setLineDash([]);
 
-  for (const [key, color] of [["running", "#00d18f"], ["limit", "#91aaa1"], ["waiting", "#ff5263"]]) {
+  for (const [key, color] of [["limit", "#91aaa1"], ["waiting", "#ff5263"]]) {
     const value = numericPointValue(point, key);
     if (value === null) continue;
     ctx.fillStyle = color;
@@ -471,14 +585,20 @@ function drawChartHover(ctx, width, height, padding, plotW, plotH, maxValue, too
     ctx.fill();
   }
 
+  const rows = (point.nodes || [])
+    .filter((node) => Number(node.running || 0) > 0)
+    .sort((a, b) => Number(b.running || 0) - Number(a.running || 0))
+    .map((node) => `<span><b style="background:${escapeAttr(node.color || colorForNode(node.id))}"></b>${escapeHTML(node.label)} ${escapeHTML(fmt(node.running, 0))}</span>`)
+    .join("");
   tooltip.hidden = false;
   tooltip.innerHTML = `
     <div>${escapeHTML(timeLabel(point.at))}</div>
-    <span><b class="green-dot"></b>running ${escapeHTML(fmt(point.running))}</span>
+    <span><b class="green-dot"></b>total ${escapeHTML(fmt(point.running))}</span>
     <span><b class="muted-dot"></b>limit ${escapeHTML(fmt(point.limit))}</span>
     <span><b class="red-dot"></b>waiting ${escapeHTML(fmt(point.waiting))}</span>
+    ${rows || "<span>no active running nodes</span>"}
   `;
-  tooltip.style.transform = `translate(${Math.min(width - 178, Math.max(10, x + 12))}px, ${Math.min(height - 118, Math.max(10, y + 12))}px)`;
+  tooltip.style.transform = `translate(${Math.min(width - 218, Math.max(10, x + 12))}px, ${Math.min(height - 168, Math.max(10, y + 12))}px)`;
 }
 
 function renderPigPanel() {
@@ -488,7 +608,7 @@ function renderPigPanel() {
   drawChart();
 
   const node = selectedPigNode();
-  $("pig-policy-target").textContent = selectedDeployment ? shortHost(selectedDeployment.base_url) : "select a Phala node";
+  $("pig-policy-target").textContent = selectedDeployment ? shortHost(deploymentBaseURL(selectedDeployment)) : "select a Phala node";
   $("pig-policy-refresh-btn").disabled = !selectedDeployment;
   $("pig-policy-save-btn").disabled = !selectedDeployment;
   if (!selectedDeployment) return;
@@ -573,13 +693,9 @@ async function refreshPig(force = false) {
     const data = await api(`/api/pig/snapshot?model_id=${encodeURIComponent(selectedModel.id)}${force ? "&force=true" : ""}`);
     pigNodes = data.nodes || [];
     const summary = data.summary || pigSummary();
-    runningHistory.push({
-      at: Date.now(),
-      running: Number(summary.running || 0),
-      waiting: Number(summary.waiting || 0),
-      limit: Number.isFinite(Number(summary.limit)) ? Number(summary.limit) : null
-    });
-    if (runningHistory.length > MAX_HISTORY_POINTS) runningHistory = runningHistory.slice(-MAX_HISTORY_POINTS);
+    runningHistory.push(buildHistoryPoint(summary, pigNodes));
+    const cutoff = Date.now() - CHART_WINDOW_MS;
+    runningHistory = runningHistory.filter((point) => Number(point.at) >= cutoff).slice(-MAX_HISTORY_POINTS);
     render();
   } catch (err) {
     log(`PIG refresh failed: ${err.message}`, "err");
@@ -599,7 +715,7 @@ function updateChartHover(event) {
   const localX = Math.max(padding.left, Math.min(width - padding.right, event.clientX - rect.left));
   const localY = Math.max(padding.top, Math.min(height - padding.bottom, event.clientY - rect.top));
   chartHover = {
-    index: Math.round((localX - padding.left) * Math.max(1, runningHistory.length - 1) / plotW),
+    time: xToTime(localX, chartTimeDomain(), padding, plotW),
     y: localY
   };
   drawChart();
@@ -631,7 +747,7 @@ async function setDeploymentActive(deployment, active) {
   if (!confirmWrite(`${verb} Phala deployment #${deployment.id}?`, {
     model: selectedModel?.model_id,
     deployment_id: deployment.id,
-    base_url: deployment.base_url,
+    base_url: deploymentBaseURL(deployment),
     active
   })) return;
   const data = await api(`/api/deployments/${encodeURIComponent(deployment.id)}/active`, {
@@ -714,7 +830,7 @@ async function savePigPolicy() {
     body: JSON.stringify(payload)
   });
   loadPolicyIntoForm(policy);
-  log(`PIG policy saved for ${shortHost(selectedDeployment.base_url)} revision ${fmt(policy.revision)}`, "ok");
+  log(`PIG policy saved for ${shortHost(deploymentBaseURL(selectedDeployment))} revision ${fmt(policy.revision)}`, "ok");
   await refreshPig(true);
 }
 
