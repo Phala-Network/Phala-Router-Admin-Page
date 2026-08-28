@@ -93,7 +93,7 @@ h1 {
 .header-actions {
   grid-area: actions;
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) 150px max-content max-content max-content;
+  grid-template-columns: minmax(260px, 1fr) max-content max-content;
   gap: 10px;
   align-items: end;
 }
@@ -115,27 +115,36 @@ h1 {
 
 main {
   display: grid;
-  grid-template-columns: minmax(320px, 370px) minmax(0, 1fr) minmax(360px, 430px);
-  grid-template-areas:
-    "summary summary summary"
-    "models deployments pig"
-    "models deployments pig"
-    "log deployments pig";
+  grid-template-columns: minmax(280px, 340px) minmax(620px, 1fr) minmax(300px, 360px);
+  grid-template-areas: "models center deployments";
+  align-items: start;
   gap: 14px;
   padding: 18px 22px 28px;
 }
 
 .summary-grid {
-  grid-area: summary;
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
 
 .model-panel { grid-area: models; }
+.center-stack {
+  grid-area: center;
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
 .deployments-panel { grid-area: deployments; min-width: 0; }
-.pig-panel { grid-area: pig; align-self: start; position: sticky; top: 100px; }
-.log-panel { grid-area: log; min-width: 0; }
+.chart-panel,
+.policy-panel,
+.log-panel { min-width: 0; }
+.model-panel,
+.deployments-panel {
+  position: sticky;
+  top: 100px;
+  align-self: start;
+}
 
 .panel,
 .stat {
@@ -289,7 +298,7 @@ button.danger {
 .model-list {
   display: grid;
   gap: 8px;
-  max-height: 540px;
+  max-height: calc(100vh - 172px);
   overflow: auto;
   padding: 12px;
 }
@@ -378,11 +387,91 @@ button.danger {
 }
 
 .deployment-toolbar {
-  display: flex;
-  justify-content: flex-end;
-  gap: 9px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
+}
+
+.deployment-toolbar button {
+  min-height: 34px;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+
+.node-list {
+  display: grid;
+  gap: 10px;
+  max-height: calc(100vh - 226px);
+  overflow: auto;
+  padding: 12px;
+}
+
+.node-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 11px;
+  background: color-mix(in srgb, var(--surface-2) 80%, transparent);
+}
+
+.node-card:hover,
+.node-card.selected {
+  border-color: color-mix(in srgb, var(--primary) 58%, var(--line));
+  background: color-mix(in srgb, var(--primary) 8%, var(--surface-2));
+}
+
+.node-card.inactive {
+  opacity: 0.74;
+}
+
+.node-card-head {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 9px;
+}
+
+.node-card-title {
+  min-width: 0;
+}
+
+.node-card .node-title {
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.node-running {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content max-content;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.13);
+}
+
+.node-running span:first-child {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.node-running strong {
+  color: var(--text);
+  font: 820 30px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.node-card .row-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
 }
 
 .table-wrap {
@@ -513,11 +602,58 @@ td:nth-child(9) { width: 146px; }
 #running-chart {
   display: block;
   width: 100%;
-  height: 190px;
+  height: min(52vh, 430px);
+  min-height: 300px;
+}
+
+.chart-shell {
+  position: relative;
+  overflow: hidden;
   border-bottom: 1px solid var(--line);
 }
 
-.pig-policy {
+.chart-tooltip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  display: grid;
+  gap: 5px;
+  min-width: 150px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--primary) 36%, var(--line));
+  border-radius: 8px;
+  background: rgba(7, 11, 10, 0.92);
+  color: var(--muted-strong);
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  font: 11px/1.25 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.chart-tooltip[hidden] {
+  display: none;
+}
+
+.chart-tooltip span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.green-dot,
+.muted-dot,
+.red-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--primary);
+}
+
+.muted-dot { background: var(--muted); }
+.red-dot { background: var(--red); }
+
+.policy-panel {
   padding: 14px;
 }
 
@@ -553,7 +689,7 @@ td:nth-child(9) { width: 146px; }
   padding: 14px;
 }
 
-.pig-policy .policy-grid {
+.policy-panel .policy-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   padding: 0;
 }
@@ -616,20 +752,25 @@ td:nth-child(9) { width: 146px; }
 
   main {
     grid-template-areas:
-      "summary"
-      "pig"
       "models"
-      "deployments"
-      "log";
+      "center"
+      "deployments";
   }
 
-  .pig-panel {
+  .model-panel,
+  .deployments-panel {
     position: static;
   }
 
   .header-actions,
-  .summary-grid {
+  .summary-grid,
+  .deployment-toolbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .model-list,
+  .node-list {
+    max-height: none;
   }
 }
 
@@ -642,7 +783,8 @@ td:nth-child(9) { width: 146px; }
 
   .header-actions,
   .summary-grid,
-  .pig-policy .policy-grid,
+  .deployment-toolbar,
+  .policy-panel .policy-grid,
   .policy-meta {
     grid-template-columns: minmax(0, 1fr);
   }

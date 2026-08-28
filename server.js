@@ -19,6 +19,8 @@ const bodyLimitBytes = Number(process.env.ADMIN_BODY_LIMIT_BYTES || String(1024 
 const syncAfterWriteDefault = process.env.REDPILL_SYNC_AFTER_WRITE !== "false";
 const modelCacheTtlMs = Number(process.env.REDPILL_MODEL_CACHE_TTL_MS || "300000");
 const deploymentCacheTtlMs = Number(process.env.REDPILL_DEPLOYMENT_CACHE_TTL_MS || "300000");
+const modelIndexCacheTtlMs = Number(process.env.REDPILL_MODEL_INDEX_CACHE_TTL_MS || String(modelCacheTtlMs));
+const modelIndexConcurrency = Math.max(1, Number(process.env.REDPILL_MODEL_INDEX_CONCURRENCY || "6"));
 const pigMetricsCacheTtlMs = Number(process.env.PIG_METRICS_CACHE_TTL_MS || "1200");
 const pigMetricsStaleTtlMs = Number(process.env.PIG_METRICS_STALE_TTL_MS || "60000");
 const pigMetricsPath = process.env.PIG_METRICS_PATH || "/pig/metrics";
@@ -30,6 +32,7 @@ const phalaHostSuffixes = splitList(process.env.REDPILL_PHALA_HOST_SUFFIXES || "
 const staticRoot = path.join(__dirname, "public");
 
 const modelCache = { at: 0, value: null, promise: null };
+const modelIndexCache = { at: 0, value: null, errors: [], promise: null };
 const deploymentCache = new Map();
 const pigMetricsCache = new Map();
 
@@ -345,17 +348,82 @@ function filterModels(models, query, activeFilter) {
   });
 }
 
+async function mapConcurrent(items, limit, mapper) {
+  const out = new Array(items.length);
+  let index = 0;
+  async function worker() {
+    while (index < items.length) {
+      const current = index;
+      index += 1;
+      out[current] = await mapper(items[current], current);
+    }
+  }
+  const workers = Array.from({ length: Math.min(limit, items.length) }, worker);
+  await Promise.all(workers);
+  return out;
+}
+
+function invalidateModelIndex() {
+  modelIndexCache.at = 0;
+  modelIndexCache.value = null;
+  modelIndexCache.errors = [];
+  modelIndexCache.promise = null;
+}
+
+async function fetchActivePhalaModels(force = false) {
+  if (!force && cacheFresh(modelIndexCache, modelIndexCacheTtlMs)) return modelIndexCache.value;
+  if (!force && modelIndexCache.promise) return modelIndexCache.promise;
+  const promise = (async () => {
+    const allModels = await fetchModels(force);
+    const errors = [];
+    const indexed = [];
+    await mapConcurrent(allModels, modelIndexConcurrency, async (model) => {
+      try {
+        const deployments = await fetchDeployments(Number(model.id), force);
+        const phalaDeployments = phalaOnly(deployments);
+        const activePhalaDeployments = phalaDeployments.filter((deployment) => deployment.active);
+        if (activePhalaDeployments.length === 0) return;
+        indexed.push({
+          ...model,
+          phala_deployment_count: phalaDeployments.length,
+          active_phala_deployment_count: activePhalaDeployments.length
+        });
+      } catch (err) {
+        errors.push({
+          model_id: model.id,
+          model: model.model_id,
+          error: errorMessage(err)
+        });
+      }
+    });
+    indexed.sort((a, b) => String(a.model_id || "").localeCompare(String(b.model_id || "")));
+    modelIndexCache.value = indexed;
+    modelIndexCache.errors = errors;
+    modelIndexCache.at = Date.now();
+    modelIndexCache.promise = null;
+    return indexed;
+  })().catch((err) => {
+    modelIndexCache.promise = null;
+    throw err;
+  });
+  modelIndexCache.promise = promise;
+  return promise;
+}
+
 async function listModels(url) {
   const force = boolFromSearch(url, "force", false);
   const query = url.searchParams.get("q") || "";
   const activeFilter = url.searchParams.get("active") || "all";
-  const models = await fetchModels(force);
+  const models = await fetchActivePhalaModels(force);
   return {
     models: filterModels(models, query, activeFilter),
     generated_at: new Date().toISOString(),
     cache: {
-      age_seconds: Math.max(0, Math.round((Date.now() - modelCache.at) / 1000)),
-      ttl_seconds: Math.round(modelCacheTtlMs / 1000)
+      age_seconds: Math.max(0, Math.round((Date.now() - modelIndexCache.at) / 1000)),
+      ttl_seconds: Math.round(modelIndexCacheTtlMs / 1000),
+      indexed_model_count: models.length,
+      scan_error_count: modelIndexCache.errors.length,
+      scan_errors: modelIndexCache.errors.slice(0, 20)
     }
   };
 }
@@ -383,6 +451,7 @@ async function fetchDeployments(modelID, force = false) {
 
 function updateDeploymentCache(modelID, updated) {
   const normalized = normalizeDeployment(updated);
+  invalidateModelIndex();
   const cached = deploymentCache.get(modelID);
   if (!cached?.value) return normalized;
   deploymentCache.set(modelID, {
@@ -995,6 +1064,8 @@ const server = http.createServer(async (req, res) => {
         phala_host_suffixes: phalaHostSuffixes,
         model_cache_ttl_ms: modelCacheTtlMs,
         deployment_cache_ttl_ms: deploymentCacheTtlMs,
+        model_index_cache_ttl_ms: modelIndexCacheTtlMs,
+        model_index_concurrency: modelIndexConcurrency,
         sync_after_write_default: syncAfterWriteDefault
       });
       return;

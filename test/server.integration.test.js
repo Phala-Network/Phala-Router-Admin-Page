@@ -276,11 +276,23 @@ test("lists models and only exposes Phala deployments for the selected model", a
 
   assert.equal((await fetch(`${baseURL}/api/health`)).status, 401);
 
+  const allModelsResponse = await fetch(`${baseURL}/api/models`, { headers: { Authorization: auth } });
+  assert.equal(allModelsResponse.status, 200);
+  const allModels = await allModelsResponse.json();
+  assert.deepEqual(allModels.models.map((model) => model.id), [89]);
+  assert.equal(allModels.models[0].active_phala_deployment_count, 1);
+  assert.equal(allModels.models[0].phala_deployment_count, 2);
+
   const modelsResponse = await fetch(`${baseURL}/api/models?q=deepseek`, { headers: { Authorization: auth } });
   assert.equal(modelsResponse.status, 200);
   const models = await modelsResponse.json();
   assert.equal(models.models.length, 1);
   assert.equal(models.models[0].model_id, "deepseek/deepseek-v4-flash-0731");
+
+  const emptyModelsResponse = await fetch(`${baseURL}/api/models?q=qwen`, { headers: { Authorization: auth } });
+  assert.equal(emptyModelsResponse.status, 200);
+  const emptyModels = await emptyModelsResponse.json();
+  assert.equal(emptyModels.models.length, 0);
 
   const deploymentsResponse = await fetch(`${baseURL}/api/models/89/deployments`, { headers: { Authorization: auth } });
   assert.equal(deploymentsResponse.status, 200);

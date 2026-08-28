@@ -21,14 +21,6 @@
         <span>Search models</span>
         <input id="model-search" placeholder="qwen, gemma, deepseek">
       </label>
-      <label>
-        <span>Model state</span>
-        <select id="model-active-filter">
-          <option value="all">All models</option>
-          <option value="active">Active only</option>
-          <option value="inactive">Inactive only</option>
-        </select>
-      </label>
       <button id="refresh-btn" class="primary" type="button">Refresh Redpill</button>
       <button id="pig-refresh-btn" type="button">Refresh PIG</button>
     </div>
@@ -36,23 +28,29 @@
   </header>
 
   <main>
-    <section id="summary" class="summary-grid"></section>
-
     <section class="panel model-panel">
       <div class="panel-title">
-        <span>Models</span>
+        <span>Active Phala models</span>
         <span id="model-count" class="panel-subtitle">-</span>
       </div>
       <div id="model-list" class="model-list"></div>
     </section>
 
-    <section class="panel pig-panel">
-      <div class="panel-title">
-        <span id="pig-panel-title">PIG runtime</span>
-        <span id="pig-panel-subtitle" class="panel-subtitle">waiting for metrics</span>
-      </div>
-      <canvas id="running-chart"></canvas>
-      <div class="pig-policy">
+    <section class="center-stack">
+      <section id="summary" class="summary-grid"></section>
+
+      <section class="panel chart-panel">
+        <div class="panel-title">
+          <span id="pig-panel-title">PIG runtime</span>
+          <span id="pig-panel-subtitle" class="panel-subtitle">waiting for metrics</span>
+        </div>
+        <div class="chart-shell">
+          <canvas id="running-chart"></canvas>
+          <div id="chart-tooltip" class="chart-tooltip" hidden></div>
+        </div>
+      </section>
+
+      <section class="panel policy-panel">
         <div class="policy-head">
           <div>
             <div class="policy-title">PIG hot policy</div>
@@ -74,12 +72,20 @@
           </div>
         </div>
         <div id="pig-policy-message" class="subline mono">select a node</div>
-      </div>
+      </section>
+
+      <section class="panel log-panel">
+        <div class="panel-title">
+          <span>Operation log</span>
+          <button id="clear-log-btn" type="button">Clear</button>
+        </div>
+        <pre id="log"></pre>
+      </section>
     </section>
 
     <section class="panel deployments-panel">
       <div class="panel-title">
-        <span id="deployments-title">Phala deployments</span>
+        <span id="deployments-title">Nodes</span>
         <span id="deployments-subtitle" class="panel-subtitle">select a model</span>
       </div>
       <div class="deployment-toolbar">
@@ -89,32 +95,7 @@
         <button id="bulk-up-btn" class="primary" type="button">Up selected</button>
         <button id="bulk-down-btn" class="danger" type="button">Down selected</button>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Select</th>
-              <th>Listing</th>
-              <th>Deployment</th>
-              <th>Endpoint</th>
-              <th>PIG load</th>
-              <th>QoS signals</th>
-              <th>Weight</th>
-              <th>Updated</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="deployments-body"></tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="panel log-panel">
-      <div class="panel-title">
-        <span>Operation log</span>
-        <button id="clear-log-btn" type="button">Clear</button>
-      </div>
-      <pre id="log"></pre>
+      <div id="deployments-body" class="node-list"></div>
     </section>
   </main>
 
