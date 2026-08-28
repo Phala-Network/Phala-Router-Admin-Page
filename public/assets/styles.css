@@ -126,7 +126,7 @@ main {
   gap: 14px;
   min-height: 0;
   overflow: hidden;
-  padding: 18px 22px 64px;
+  padding: 18px 22px;
 }
 
 .summary-grid {
@@ -139,17 +139,22 @@ main {
 .center-stack {
   grid-area: center;
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 14px;
-  align-content: start;
   height: 100%;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
 }
 .deployments-panel { grid-area: deployments; min-width: 0; }
 .chart-panel,
 .policy-panel,
 .log-panel { min-width: 0; }
+.chart-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 .model-panel,
 .deployments-panel {
   display: flex;
@@ -617,11 +622,13 @@ td:nth-child(9) { width: 146px; }
 #running-chart {
   display: block;
   width: 100%;
-  height: min(52vh, 430px);
-  min-height: 300px;
+  height: 100%;
+  min-height: 0;
 }
 
 .chart-shell {
+  flex: 1;
+  min-height: 0;
   position: relative;
   overflow: hidden;
   border-bottom: 1px solid var(--line);
@@ -729,7 +736,9 @@ td:nth-child(9) { width: 146px; }
 }
 
 #log {
-  height: min(40vh, 420px);
+  flex: 1;
+  min-height: 0;
+  height: auto;
   margin: 0;
   padding: 14px;
   overflow: auto;
@@ -747,35 +756,73 @@ td:nth-child(9) { width: 146px; }
   color: color-mix(in srgb, var(--red) 84%, var(--text));
 }
 
-.log-drawer {
+.log-flyout {
   position: fixed;
+  top: 104px;
   right: 22px;
-  bottom: 14px;
-  left: 22px;
+  bottom: 18px;
   z-index: 10;
+  display: flex;
+  flex-direction: column;
+  width: min(380px, calc(100vw - 44px));
+  max-width: calc(100vw - 44px);
   overflow: hidden;
   background: rgba(14, 21, 19, 0.96);
   backdrop-filter: blur(16px);
-  transition: transform 160ms ease, border-color 160ms ease;
+  transition:
+    width 170ms ease,
+    height 170ms ease,
+    border-radius 170ms ease,
+    border-color 170ms ease,
+    box-shadow 170ms ease;
 }
 
-.log-drawer.collapsed {
-  transform: translateY(calc(100% - 42px));
+.log-flyout.collapsed {
+  top: 116px;
+  bottom: auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border-color: color-mix(in srgb, var(--primary) 42%, var(--line));
 }
 
 .log-toggle {
   display: grid;
-  grid-template-columns: 26px max-content minmax(0, 1fr);
+  grid-template-columns: 26px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 42px;
+  min-height: 48px;
   border: 0;
   border-bottom: 1px solid var(--line);
   border-radius: 0;
   padding: 0 14px;
   background: color-mix(in srgb, var(--surface-2) 88%, transparent);
   text-align: left;
+}
+
+.log-toggle-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.log-flyout.collapsed .log-toggle {
+  grid-template-columns: 1fr;
+  width: 100%;
+  min-height: 32px;
+  height: 32px;
+  padding: 0;
+  border-bottom: 0;
+  border-radius: inherit;
+}
+
+.log-flyout.collapsed .log-toggle-copy {
+  display: none;
+}
+
+.log-flyout.collapsed .log-content {
+  display: none;
 }
 
 .log-arrow {
@@ -787,6 +834,11 @@ td:nth-child(9) { width: 146px; }
   border-radius: 999px;
   color: var(--primary);
   font: 800 14px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.log-flyout.collapsed .log-arrow {
+  border-color: color-mix(in srgb, var(--primary) 42%, var(--line));
+  background: color-mix(in srgb, var(--primary) 10%, var(--surface-2));
 }
 
 .log-toggle-title {
@@ -812,7 +864,10 @@ td:nth-child(9) { width: 146px; }
 }
 
 .log-content {
-  display: grid;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .empty {
@@ -840,6 +895,7 @@ td:nth-child(9) { width: 146px; }
       "models"
       "center"
       "deployments";
+    overflow: auto;
   }
 
   .model-panel,
@@ -857,6 +913,15 @@ td:nth-child(9) { width: 146px; }
   .model-list,
   .node-list {
     overflow: auto;
+  }
+
+  .center-stack {
+    height: auto;
+    overflow: visible;
+  }
+
+  #running-chart {
+    height: 320px;
   }
 }
 

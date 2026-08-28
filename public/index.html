@@ -92,11 +92,13 @@
     </section>
   </main>
 
-  <section id="log-panel" class="panel log-panel log-drawer collapsed" aria-expanded="false">
+  <section id="log-panel" class="panel log-panel log-flyout collapsed" aria-expanded="false">
     <button id="log-toggle-btn" class="log-toggle" type="button" aria-expanded="false" aria-controls="log-content">
-      <span id="log-toggle-arrow" class="log-arrow">^</span>
-      <span class="log-toggle-title">Operation log</span>
-      <span id="log-toggle-summary" class="log-toggle-summary">no entries</span>
+      <span id="log-toggle-arrow" class="log-arrow">&lt;</span>
+      <span class="log-toggle-copy">
+        <span class="log-toggle-title">Operation log</span>
+        <span id="log-toggle-summary" class="log-toggle-summary">no entries</span>
+      </span>
     </button>
     <div id="log-content" class="log-content">
       <div class="panel-title">

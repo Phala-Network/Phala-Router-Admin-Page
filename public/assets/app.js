@@ -89,7 +89,7 @@ function setStatus(text, tone) {
   el.className = `status-line ${tone || ""}`.trim();
 }
 
-function updateLogDrawer() {
+function updateLogPanel() {
   const panel = $("log-panel");
   const button = $("log-toggle-btn");
   const arrow = $("log-toggle-arrow");
@@ -98,8 +98,9 @@ function updateLogDrawer() {
   panel.classList.toggle("collapsed", !logExpanded);
   panel.setAttribute("aria-expanded", String(logExpanded));
   button.setAttribute("aria-expanded", String(logExpanded));
-  arrow.textContent = logExpanded ? "v" : "^";
+  arrow.textContent = logExpanded ? ">" : "<";
   summary.textContent = logEntryCount > 0 ? `${logEntryCount} entries | ${lastLogLine}` : "no entries";
+  button.title = summary.textContent;
   summary.className = `log-toggle-summary ${lastLogTone || ""}`.trim();
 }
 
@@ -112,7 +113,7 @@ function log(value, tone) {
   logEntryCount += 1;
   lastLogLine = line.replace(/\s+/g, " ").slice(0, 120);
   lastLogTone = tone || "";
-  updateLogDrawer();
+  updateLogPanel();
 }
 
 async function api(path, options = {}) {
@@ -870,11 +871,11 @@ $("clear-log-btn").addEventListener("click", () => {
   logEntryCount = 0;
   lastLogLine = "";
   lastLogTone = "";
-  updateLogDrawer();
+  updateLogPanel();
 });
 $("log-toggle-btn").addEventListener("click", () => {
   logExpanded = !logExpanded;
-  updateLogDrawer();
+  updateLogPanel();
 });
 $("pig-policy-refresh-btn").addEventListener("click", () => readPigPolicy().catch((err) => log(err.message, "err")));
 $("pig-policy-save-btn").addEventListener("click", () => savePigPolicy().catch((err) => log(err.message, "err")));
@@ -916,5 +917,5 @@ $("running-chart").addEventListener("mouseleave", () => {
 window.addEventListener("resize", drawChart);
 
 refreshRedpill(true);
-updateLogDrawer();
+updateLogPanel();
 pigTimer = window.setTimeout(() => refreshPig(false), PIG_REFRESH_MS);
