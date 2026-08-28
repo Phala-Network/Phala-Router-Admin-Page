@@ -1,12 +1,12 @@
 {
-  "name": "phala-router-admin-page",
-  "version": "0.2.1",
+  "name": "phala-node-admin-page",
+  "version": "0.4.0",
   "private": true,
-  "description": "Small authenticated admin page for Phala router upstream management.",
+  "description": "Authenticated Phala node admin page for Redpill listing state and PIG hot policy.",
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check capacity.js && node --check public/assets/app.js",
+    "check": "node --check server.js && node --check public/assets/app.js",
     "test": "node --test"
   },
   "engines": {

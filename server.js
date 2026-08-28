@@ -4,57 +4,53 @@ const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
-const { buildCapacityView, mergeRouterPigMetrics } = require("./capacity");
 
 const port = Number(process.env.PORT || "8080");
-const gatewayToken = process.env.GATEWAY_ADMIN_TOKEN || "";
 const basicUser = process.env.BASIC_AUTH_USER || "";
 const basicPasswordHash = process.env.BASIC_AUTH_PASSWORD_SHA256 || "";
-const timeoutMs = Number(process.env.METRICS_TIMEOUT_MS || "2500");
-const metricsStaleTtlMs = Number(process.env.METRICS_STALE_TTL_MS || "60000");
-const controlStaleTtlMs = Number(process.env.CONTROL_STALE_TTL_MS || "60000");
-const runtimeStaleTtlMs = Number(process.env.RUNTIME_STALE_TTL_MS || "60000");
+const redpillAPIURL = normalizedBaseURL(process.env.REDPILL_API_URL || "https://service.redpill.ai");
+const redpillAPIKey = process.env.REDPILL_API_KEY || "";
+const privateAIControlURL = normalizedBaseURL(process.env.PRIVATE_AI_CONTROL_URL || "");
+const redpillWebURL = normalizedBaseURL(process.env.REDPILL_WEB_URL || "");
+const redpillWebRevalidateToken = process.env.REDPILL_WEB_REVALIDATE_TOKEN || "";
+const requestTimeoutMs = Number(process.env.REDPILL_REQUEST_TIMEOUT_MS || "15000");
+const pigRequestTimeoutMs = Number(process.env.PIG_REQUEST_TIMEOUT_MS || "2500");
+const bodyLimitBytes = Number(process.env.ADMIN_BODY_LIMIT_BYTES || String(1024 * 1024));
+const syncAfterWriteDefault = process.env.REDPILL_SYNC_AFTER_WRITE !== "false";
+const modelCacheTtlMs = Number(process.env.REDPILL_MODEL_CACHE_TTL_MS || "300000");
+const deploymentCacheTtlMs = Number(process.env.REDPILL_DEPLOYMENT_CACHE_TTL_MS || "300000");
+const pigMetricsCacheTtlMs = Number(process.env.PIG_METRICS_CACHE_TTL_MS || "1200");
+const pigMetricsStaleTtlMs = Number(process.env.PIG_METRICS_STALE_TTL_MS || "60000");
+const pigMetricsPath = process.env.PIG_METRICS_PATH || "/pig/metrics";
+const pigPolicyPath = process.env.PIG_POLICY_PATH || "/admin/v1/predictive-policy";
+const pigPolicyBodyLimit = Number(process.env.PIG_POLICY_BODY_LIMIT_BYTES || "4096");
+const pigAdminToken = process.env.PIG_ADMIN_TOKEN || process.env.GATEWAY_ADMIN_TOKEN || process.env.PHALA_NODE_BEARER_TOKEN || "";
+const phalaProviders = splitList(process.env.REDPILL_PHALA_PROVIDERS || "phala").map((value) => value.toLowerCase());
+const phalaHostSuffixes = splitList(process.env.REDPILL_PHALA_HOST_SUFFIXES || "phala.com").map((value) => value.toLowerCase());
 const staticRoot = path.join(__dirname, "public");
-const pigPolicyPath = "/admin/v1/predictive-policy";
-const pigPolicyBodyLimit = 4096;
-const metricsCache = new Map();
-const controlCache = new Map();
-const runtimeCache = new Map();
 
-function readRoutersConfig() {
-  const file = process.env.ROUTERS_FILE || "";
-  if (file) {
-    try {
-      return fs.readFileSync(file, "utf8");
-    } catch (err) {
-      console.error(`failed to read ROUTERS_FILE ${file}: ${err.message}`);
-    }
+const modelCache = { at: 0, value: null, promise: null };
+const deploymentCache = new Map();
+const pigMetricsCache = new Map();
+
+class HTTPError extends Error {
+  constructor(status, message, details) {
+    super(message);
+    this.status = status;
+    this.details = details;
   }
-  return process.env.ROUTERS_JSON || "[]";
 }
 
-function parseRouters() {
-  let routers = [];
-  try {
-    routers = JSON.parse(readRoutersConfig());
-  } catch (err) {
-    console.error(`failed to parse routers config: ${err.message}`);
-  }
-  if (!Array.isArray(routers)) routers = [];
-  return routers
-    .map((router, index) => ({
-      id: String(router.id || router.label || `router-${index + 1}`).trim(),
-      label: String(router.label || router.id || `Router ${index + 1}`).trim(),
-      url: String(router.url || "").trim().replace(/\/+$/, ""),
-      default_public_model: String(router.default_public_model || "model").trim(),
-      default_upstream_model: String(router.default_upstream_model || router.default_public_model || "model").trim(),
-      default_provider: String(router.default_provider || "phala-direct").trim(),
-      default_use_shared_bearer: router.default_use_shared_bearer !== false
-    }))
-    .filter((router) => router.id && router.url);
+function splitList(value) {
+  return String(value || "")
+    .split(/[\s,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
-const routers = parseRouters();
+function normalizedBaseURL(value) {
+  return String(value || "").trim().replace(/\/+$/, "");
+}
 
 function timingEqual(a, b) {
   const aa = Buffer.from(String(a));
@@ -82,7 +78,7 @@ function authorized(req) {
 function requireAuth(req, res) {
   if (authorized(req)) return true;
   res.writeHead(401, {
-    "WWW-Authenticate": 'Basic realm="Phala Router Admin"',
+    "WWW-Authenticate": 'Basic realm="Phala Node Admin"',
     "Content-Type": "text/plain; charset=utf-8",
     "Cache-Control": "no-store"
   });
@@ -106,56 +102,75 @@ function sendText(res, status, text, contentType) {
   res.end(text);
 }
 
-function publicRouters() {
-  return routers.map((router) => ({
-    id: router.id,
-    label: router.label,
-    url: router.url,
-    default_public_model: router.default_public_model,
-    default_upstream_model: router.default_upstream_model,
-    default_provider: router.default_provider,
-    default_use_shared_bearer: router.default_use_shared_bearer
-  }));
+function errorMessage(err) {
+  return String(err && err.message ? err.message : err);
 }
 
-function cloneJSON(value) {
-  if (value === null || value === undefined) return value;
-  return JSON.parse(JSON.stringify(value));
+function errorStatus(err) {
+  if (err instanceof HTTPError) return err.status;
+  return 502;
 }
 
-function nowISO(time) {
-  return new Date(time).toISOString();
+function sendError(res, err) {
+  const status = errorStatus(err);
+  const payload = { error: errorMessage(err) };
+  if (err instanceof HTTPError && err.details !== undefined) payload.details = err.details;
+  sendJSON(res, status, payload);
 }
 
-function cacheFresh(entry, ttlMs) {
-  return entry && Number.isFinite(ttlMs) && ttlMs > 0 && Date.now() - entry.at <= ttlMs;
+function requireRedpillConfig() {
+  if (!redpillAPIURL) throw new HTTPError(500, "REDPILL_API_URL is not configured");
+  if (!redpillAPIKey) throw new HTTPError(500, "REDPILL_API_KEY is not configured");
 }
 
-function normalizedBaseURL(baseURL) {
-  return String(baseURL || "").trim().replace(/\/+$/, "");
+function compactUpstreamError(text) {
+  const raw = String(text || "").replace(/\s+/g, " ").trim();
+  return raw.length > 1200 ? `${raw.slice(0, 1200)}...` : raw;
 }
 
-function sharedBearerToken() {
-  if (!gatewayToken) throw new Error("gateway admin token is not configured");
-  return gatewayToken;
+function contentTypeFor(filePath) {
+  const ext = path.extname(filePath);
+  if (ext === ".html") return "text/html; charset=utf-8";
+  if (ext === ".css") return "text/css; charset=utf-8";
+  if (ext === ".js") return "application/javascript; charset=utf-8";
+  if (ext === ".json") return "application/json; charset=utf-8";
+  return "application/octet-stream";
 }
 
-function selectedRouter(url) {
-  if (routers.length === 0) throw new Error("no routers configured");
-  const id = url.searchParams.get("router") || routers[0].id;
-  const router = routers.find((item) => item.id === id);
-  if (!router) throw new Error(`unknown router: ${id}`);
-  return router;
+function serveStatic(req, res, pathname) {
+  let decoded = "";
+  try {
+    decoded = decodeURIComponent(pathname === "/" ? "/index.html" : pathname);
+  } catch {
+    sendText(res, 400, "bad path\n");
+    return;
+  }
+  const resolved = path.resolve(staticRoot, "." + decoded);
+  if (!resolved.startsWith(staticRoot + path.sep)) {
+    sendText(res, 403, "forbidden\n");
+    return;
+  }
+  fs.readFile(resolved, (err, data) => {
+    if (err) {
+      sendText(res, 404, "not found\n");
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": contentTypeFor(resolved),
+      "Cache-Control": "no-store"
+    });
+    res.end(data);
+  });
 }
 
-function readBody(req) {
+function readBody(req, limit = bodyLimitBytes) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let total = 0;
     req.on("data", (chunk) => {
       total += chunk.length;
-      if (total > 1024 * 1024) {
-        reject(new Error("request body too large"));
+      if (total > limit) {
+        reject(new HTTPError(413, `request body exceeds ${limit} bytes`));
         req.destroy();
         return;
       }
@@ -166,9 +181,22 @@ function readBody(req) {
   });
 }
 
+async function readJSON(req, limit = bodyLimitBytes) {
+  const body = await readBody(req, limit);
+  try {
+    const parsed = JSON.parse(body.toString("utf8") || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("body must be a JSON object");
+    }
+    return parsed;
+  } catch (err) {
+    throw new HTTPError(400, `invalid JSON body: ${errorMessage(err)}`);
+  }
+}
+
 async function fetchWithTimeout(url, options = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || timeoutMs);
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || requestTimeoutMs);
   try {
     const requestOptions = { ...options, signal: controller.signal };
     delete requestOptions.timeoutMs;
@@ -178,205 +206,386 @@ async function fetchWithTimeout(url, options = {}) {
   }
 }
 
-async function fetchText(url, options = {}) {
+async function requestJSON(url, options = {}) {
   const response = await fetchWithTimeout(url, options);
   const text = await response.text();
-  return {
-    ok: response.ok,
-    status: response.status,
-    text,
-    contentType: response.headers.get("content-type") || "application/json; charset=utf-8"
-  };
-}
-
-async function gatewayRequest(router, method, requestPath, body, contentType = "application/json") {
-  if (!gatewayToken) throw new Error("gateway admin token is not configured");
-  const headers = {
-    Authorization: `Bearer ${gatewayToken}`,
-    Accept: "application/json"
-  };
-  if (body && body.length) headers["Content-Type"] = contentType;
-  const upstream = await fetchWithTimeout(router.url + requestPath, {
-    method,
-    headers,
-    body: body && body.length ? body : undefined
-  });
-  const text = await upstream.text();
-  return {
-    status: upstream.status,
-    text,
-    contentType: upstream.headers.get("content-type") || "application/json; charset=utf-8"
-  };
-}
-
-async function gatewayJSON(router, method, requestPath, value) {
-  const body = value === undefined ? undefined : Buffer.from(JSON.stringify(value));
-  const upstream = await gatewayRequest(router, method, requestPath, body);
   let data = null;
   try {
-    data = upstream.text ? JSON.parse(upstream.text) : null;
+    data = text ? JSON.parse(text) : null;
   } catch {
-    data = upstream.text;
+    data = text;
   }
-  if (upstream.status < 200 || upstream.status >= 300) {
-    throw new Error(typeof data === "string" ? data : JSON.stringify(data));
+  if (!response.ok) {
+    const message = typeof data === "string" ? compactUpstreamError(data) : JSON.stringify(data);
+    throw new HTTPError(response.status >= 400 && response.status < 500 ? response.status : 502, `HTTP ${response.status}: ${message}`);
   }
   return data;
 }
 
-async function proxyGateway(req, res, router, requestPath) {
-  let body;
-  if (!["GET", "HEAD"].includes(req.method)) body = await readBody(req);
-  const upstream = await gatewayRequest(router, req.method, requestPath, body, req.headers["content-type"] || "application/json");
-  res.writeHead(upstream.status, {
-    "Content-Type": upstream.contentType,
-    "Cache-Control": "no-store"
-  });
-  res.end(upstream.text);
-}
-
-function parseJSONBody(buffer, label) {
-  try {
-    return JSON.parse(buffer.toString("utf8") || "{}");
-  } catch (err) {
-    throw new Error(`${label} is not valid JSON: ${err.message}`);
-  }
-}
-
-function normalizeTPSReference(value) {
-  if (typeof value === "string" && value.trim() === "") {
-    throw new Error("TPS reference must be an integer in [0, 1000000]");
-  }
-  const tpsReference = Number(value);
-  if (!Number.isInteger(tpsReference) || tpsReference < 0 || tpsReference > 1000000) {
-    throw new Error("TPS reference must be an integer in [0, 1000000]");
-  }
-  return tpsReference;
-}
-
-function normalizeOptionalInteger(value, label, min, max) {
-  if (value === undefined) return undefined;
-  if (typeof value === "string" && value.trim() === "") {
-    throw new Error(`${label} must be an integer in [${min}, ${max}]`);
-  }
-  const number = Number(value);
-  if (!Number.isInteger(number) || number < min || number > max) {
-    throw new Error(`${label} must be an integer in [${min}, ${max}]`);
-  }
-  return number;
-}
-
-function normalizePigPolicyPatch(input) {
-  const payload = { ...input };
-  const hasTPS = Object.hasOwn(input, "tps_reference");
-  const hasWindowConcurrency = Object.hasOwn(input, "window_concurrency");
-  const hasRunningLimit = Object.hasOwn(input, "running_limit");
-  if (!hasTPS && !hasWindowConcurrency && !hasRunningLimit) {
-    throw new Error("PIG policy patch must include tps_reference, window_concurrency, or running_limit");
-  }
-  if (hasTPS) payload.tps_reference = normalizeTPSReference(input.tps_reference);
-  if (hasWindowConcurrency) {
-    payload.window_concurrency = normalizeOptionalInteger(input.window_concurrency, "Window concurrency", 1, 1000000);
-  }
-  if (hasRunningLimit) payload.running_limit = normalizeOptionalInteger(input.running_limit, "Running limit", 0, 1000000);
-  return payload;
-}
-
-function parsePolicyJSON(response) {
-  try {
-    const data = response.text ? JSON.parse(response.text) : {};
-    if (!data || typeof data !== "object" || Array.isArray(data)) {
-      throw new Error("policy response is not a JSON object");
-    }
-    return data;
-  } catch (err) {
-    throw new Error(`PIG policy response is not valid JSON: ${err.message}`);
-  }
-}
-
-async function pigPolicyRequest(baseURL, method, payload) {
+async function redpillRequest(method, requestPath, body) {
+  requireRedpillConfig();
   const headers = {
-    Authorization: `Bearer ${sharedBearerToken()}`,
+    "X-API-Key": redpillAPIKey,
     Accept: "application/json"
   };
-  let body;
-  if (payload !== undefined) {
-    body = Buffer.from(JSON.stringify(payload));
+  const options = { method, headers };
+  if (body !== undefined) {
     headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(body);
   }
-  const upstream = await fetchWithTimeout(baseURL + pigPolicyPath, {
-    method,
-    headers,
-    body
-  });
+  return requestJSON(redpillAPIURL + requestPath, options);
+}
+
+function cacheFresh(entry, ttlMs) {
+  return entry && ttlMs > 0 && Date.now() - entry.at <= ttlMs;
+}
+
+function boolFromSearch(url, name, defaultValue) {
+  const raw = url.searchParams.get(name);
+  if (raw === null || raw === "") return defaultValue;
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
+function normalizeModel(model) {
+  const specs = model.specs && typeof model.specs === "object" ? model.specs : {};
   return {
-    status: upstream.status,
-    text: await upstream.text(),
-    contentType: upstream.headers.get("content-type") || "application/json; charset=utf-8"
+    id: model.id,
+    model_id: model.model_id,
+    name: model.name || model.model_id,
+    active: Boolean(model.active),
+    context_length: model.context_length ?? specs.context_length ?? null,
+    is_tee: specs.is_tee ?? null,
+    input_cost_per_token: specs.input_cost_per_token ?? null,
+    output_cost_per_token: specs.output_cost_per_token ?? null,
+    supported_parameters: Array.isArray(specs.supported_parameters) ? specs.supported_parameters : [],
+    input_modalities: Array.isArray(specs.input_modalities) ? specs.input_modalities : []
   };
 }
 
-async function readPigPolicyFromNode(baseURL) {
-  const response = await pigPolicyRequest(baseURL, "GET");
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(`PIG policy read failed: HTTP ${response.status} ${response.text}`);
-  }
-  const policy = parsePolicyJSON(response);
-  const revision = Number(policy.revision);
-  if (!Number.isFinite(revision) || revision <= 0) {
-    throw new Error("PIG policy response has no positive numeric revision");
-  }
-  return policy;
+function normalizeDeployment(deployment) {
+  const config = deployment.config && typeof deployment.config === "object" ? deployment.config : {};
+  return {
+    id: deployment.id,
+    model_id: deployment.model_id,
+    model_string_id: deployment.model_string_id,
+    provider: deployment.provider,
+    provider_name: deployment.provider_name,
+    deployment_name: deployment.deployment_name,
+    active: Boolean(deployment.active),
+    base_url: config.base_url || deployment.base_url || "",
+    weight: config.weight ?? deployment.weight ?? null,
+    has_api_key: config.has_api_key ?? null,
+    input_cost_per_token: config.input_cost_per_token ?? null,
+    output_cost_per_token: config.output_cost_per_token ?? null,
+    cache_read_cost_per_token: config.cache_read_cost_per_token ?? null,
+    cache_creation_cost_per_token: config.cache_creation_cost_per_token ?? null,
+    capabilities: config.capabilities || {},
+    created_at: deployment.created_at,
+    updated_at: deployment.updated_at
+  };
 }
 
-async function patchPigPolicyDirect(baseURL, patch) {
-  let latestResponse = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const policy = await readPigPolicyFromNode(baseURL);
-    const revision = Number(policy.revision);
-    latestResponse = await pigPolicyRequest(baseURL, "PATCH", { ...patch, expected_revision: revision });
-    if (latestResponse.status !== 409) return latestResponse;
-  }
-  return latestResponse;
+function lowerProviderFields(deployment) {
+  return [deployment.provider, deployment.provider_name]
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean);
 }
 
-function sendPigPolicyResponse(res, upstream) {
-  res.writeHead(upstream.status, {
-    "Content-Type": upstream.contentType,
-    "Cache-Control": "no-store"
+function hostFromEndpoint(value) {
+  try {
+    const raw = String(value || "");
+    const url = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+    return url.hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function isPhalaHost(value) {
+  const host = hostFromEndpoint(value);
+  if (!host) return false;
+  return phalaHostSuffixes.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
+}
+
+function isPhalaDeployment(deployment) {
+  const providers = lowerProviderFields(deployment);
+  return providers.some((provider) => phalaProviders.includes(provider)) || isPhalaHost(deployment.base_url);
+}
+
+function phalaOnly(deployments) {
+  return deployments.filter(isPhalaDeployment);
+}
+
+async function fetchModels(force = false) {
+  if (!force && cacheFresh(modelCache, modelCacheTtlMs)) return modelCache.value;
+  if (!force && modelCache.promise) return modelCache.promise;
+  const promise = redpillRequest("GET", "/api/admin/models?include_inactive=true")
+    .then((models) => {
+      const normalized = (Array.isArray(models) ? models : []).map(normalizeModel);
+      modelCache.value = normalized;
+      modelCache.at = Date.now();
+      modelCache.promise = null;
+      return normalized;
+    })
+    .catch((err) => {
+      modelCache.promise = null;
+      throw err;
+    });
+  modelCache.promise = promise;
+  return promise;
+}
+
+function filterModels(models, query, activeFilter) {
+  const needle = String(query || "").trim().toLowerCase();
+  return models.filter((model) => {
+    if (activeFilter === "active" && !model.active) return false;
+    if (activeFilter === "inactive" && model.active) return false;
+    if (!needle) return true;
+    return [model.model_id, model.name, model.id].some((value) => String(value || "").toLowerCase().includes(needle));
   });
-  res.end(upstream.text);
 }
 
-async function proxyPigPolicy(req, res, router, url) {
-  const nodeID = String(url.searchParams.get("node") || "").trim();
-  if (!nodeID) throw new Error("node is required");
-  const upstreams = await getUpstreams(router);
-  const node = upstreams.find((item) => item.name === nodeID);
-  if (!node) throw new Error(`node not found: ${nodeID}`);
-  const baseURL = normalizedBaseURL(node.base_url);
-  if (!baseURL) throw new Error(`node ${nodeID} has no base_url`);
+async function listModels(url) {
+  const force = boolFromSearch(url, "force", false);
+  const query = url.searchParams.get("q") || "";
+  const activeFilter = url.searchParams.get("active") || "all";
+  const models = await fetchModels(force);
+  return {
+    models: filterModels(models, query, activeFilter),
+    generated_at: new Date().toISOString(),
+    cache: {
+      age_seconds: Math.max(0, Math.round((Date.now() - modelCache.at) / 1000)),
+      ttl_seconds: Math.round(modelCacheTtlMs / 1000)
+    }
+  };
+}
 
-  let upstream;
-  if (req.method === "PATCH") {
-    const body = await readBody(req);
-    if (body.length > pigPolicyBodyLimit) {
-      throw new Error(`PIG policy request body exceeds ${pigPolicyBodyLimit} bytes`);
-    }
-    const input = parseJSONBody(body, "PIG policy request body");
-    if (!input || typeof input !== "object" || Array.isArray(input)) {
-      throw new Error("PIG policy request body must be a JSON object");
-    }
-    const payload = normalizePigPolicyPatch(input);
-    if (Object.hasOwn(input, "expected_revision")) {
-      upstream = await pigPolicyRequest(baseURL, "PATCH", payload);
-    } else {
-      upstream = await patchPigPolicyDirect(baseURL, payload);
-    }
-  } else {
-    upstream = await pigPolicyRequest(baseURL, req.method);
+async function fetchDeployments(modelID, force = false) {
+  if (!Number.isInteger(modelID) || modelID <= 0) throw new HTTPError(400, "model id must be a positive integer");
+  const cached = deploymentCache.get(modelID);
+  if (!force && cacheFresh(cached, deploymentCacheTtlMs)) return cached.value;
+  if (!force && cached?.promise) return cached.promise;
+  const promise = redpillRequest("GET", `/api/admin/models/${modelID}/deployments?include_inactive=true`)
+    .then((deployments) => {
+      const normalized = (Array.isArray(deployments) ? deployments : [])
+        .map(normalizeDeployment)
+        .sort((a, b) => Number(a.id) - Number(b.id));
+      deploymentCache.set(modelID, { value: normalized, at: Date.now(), promise: null });
+      return normalized;
+    })
+    .catch((err) => {
+      if (cached) deploymentCache.set(modelID, { ...cached, promise: null });
+      throw err;
+    });
+  deploymentCache.set(modelID, { ...(cached || {}), promise });
+  return promise;
+}
+
+function updateDeploymentCache(modelID, updated) {
+  const normalized = normalizeDeployment(updated);
+  const cached = deploymentCache.get(modelID);
+  if (!cached?.value) return normalized;
+  deploymentCache.set(modelID, {
+    value: cached.value.map((item) => Number(item.id) === Number(normalized.id) ? normalized : item).sort((a, b) => Number(a.id) - Number(b.id)),
+    at: Date.now(),
+    promise: null
+  });
+  return normalized;
+}
+
+async function listDeployments(modelID, force = false) {
+  const deployments = await fetchDeployments(modelID, force);
+  const phalaDeployments = phalaOnly(deployments);
+  const cached = deploymentCache.get(modelID);
+  return {
+    model_id: modelID,
+    deployments: phalaDeployments,
+    all_deployment_count: deployments.length,
+    hidden_non_phala_count: deployments.length - phalaDeployments.length,
+    generated_at: new Date().toISOString(),
+    cache: cached ? {
+      age_seconds: Math.max(0, Math.round((Date.now() - cached.at) / 1000)),
+      ttl_seconds: Math.round(deploymentCacheTtlMs / 1000)
+    } : null
+  };
+}
+
+async function requireManagedDeployment(modelID, deploymentID) {
+  let deployments = await fetchDeployments(modelID, false);
+  let deployment = deployments.find((item) => Number(item.id) === Number(deploymentID));
+  if (!deployment) {
+    deployments = await fetchDeployments(modelID, true);
+    deployment = deployments.find((item) => Number(item.id) === Number(deploymentID));
   }
-  sendPigPolicyResponse(res, upstream);
+  if (!deployment) throw new HTTPError(404, `deployment not found: ${deploymentID}`);
+  if (!isPhalaDeployment(deployment)) throw new HTTPError(403, "only Phala deployments can be managed here");
+  return deployment;
+}
+
+function modelIDFromInput(input) {
+  const modelID = Number(input.model_id);
+  if (!Number.isInteger(modelID) || modelID <= 0) throw new HTTPError(400, "model_id must be a positive integer");
+  return modelID;
+}
+
+function shouldSync(input) {
+  if (!Object.prototype.hasOwnProperty.call(input, "sync_after_write")) return syncAfterWriteDefault;
+  return input.sync_after_write !== false;
+}
+
+async function maybeWithSync(input, payload) {
+  if (!shouldSync(input)) return { ...payload, sync: null };
+  return { ...payload, sync: await propagateAll() };
+}
+
+async function setDeploymentActive(req, deploymentID) {
+  const input = await readJSON(req);
+  const modelID = modelIDFromInput(input);
+  const current = await requireManagedDeployment(modelID, deploymentID);
+  if (typeof input.active !== "boolean") throw new HTTPError(400, "active must be boolean");
+  if (current.active === input.active) {
+    return maybeWithSync({ ...input, sync_after_write: false }, {
+      deployment: current,
+      changed: false,
+      deployments: phalaOnly(await fetchDeployments(modelID, false))
+    });
+  }
+  const updated = updateDeploymentCache(modelID, await redpillRequest("PATCH", `/api/admin/deployments/${deploymentID}/active`, { active: input.active }));
+  return maybeWithSync(input, {
+    deployment: updated,
+    changed: true,
+    deployments: phalaOnly(await fetchDeployments(modelID, false))
+  });
+}
+
+async function bulkSetDeploymentActive(req) {
+  const input = await readJSON(req);
+  const modelID = modelIDFromInput(input);
+  if (typeof input.active !== "boolean") throw new HTTPError(400, "active must be boolean");
+  if (!Array.isArray(input.deployment_ids) || input.deployment_ids.length === 0) {
+    throw new HTTPError(400, "deployment_ids must be a non-empty array");
+  }
+  const ids = input.deployment_ids.map((id) => Number(id));
+  if (ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+    throw new HTTPError(400, "deployment_ids must contain positive integers");
+  }
+
+  const deployments = await fetchDeployments(modelID, false);
+  const results = [];
+  for (const id of ids) {
+    const current = deployments.find((deployment) => Number(deployment.id) === id);
+    if (!current) throw new HTTPError(404, `deployment not found: ${id}`);
+    if (!isPhalaDeployment(current)) throw new HTTPError(403, `only Phala deployments can be managed here: ${id}`);
+    if (current.active === input.active) {
+      results.push({ id, changed: false, active: current.active, action: input.active ? "already_active" : "already_inactive" });
+      continue;
+    }
+    const updated = updateDeploymentCache(modelID, await redpillRequest("PATCH", `/api/admin/deployments/${id}/active`, { active: input.active }));
+    current.active = updated.active;
+    results.push({ id, changed: true, active: updated.active, action: input.active ? "activated" : "deactivated" });
+  }
+  const changed = results.some((result) => result.changed);
+  const sync = changed && shouldSync(input) ? await propagateAll() : null;
+  return {
+    model_id: modelID,
+    active: input.active,
+    results,
+    sync,
+    deployments: phalaOnly(await fetchDeployments(modelID, false))
+  };
+}
+
+async function propagateAll() {
+  const preview = await gatewayPreviewSummary();
+  if (preview.error_count > 0) {
+    throw new HTTPError(409, "gateway preview has errors; refusing to sync", preview);
+  }
+  const syncRaw = await redpillRequest("POST", "/api/admin/gateway-upstreams/sync", {});
+  const sync = {
+    upstream_count: syncRaw.upstream_count ?? null,
+    route_count: syncRaw.route_count ?? null,
+    config_digest: syncRaw.config_digest ?? null,
+    generated_at: syncRaw.generated_at ?? null
+  };
+  const [control, web] = await Promise.all([refreshControlCache(), refreshWebCache()]);
+  return { preview, sync, control, web };
+}
+
+async function refreshControlCache() {
+  if (!privateAIControlURL) return { skipped: true, reason: "PRIVATE_AI_CONTROL_URL is not configured" };
+  const keyHash = crypto.createHash("sha256").update(redpillAPIKey).digest("hex");
+  const data = await requestJSON(privateAIControlURL + "/admin/cache/refresh", {
+    method: "POST",
+    headers: {
+      "X-API-Key-Hash": keyHash,
+      "Content-Type": "application/json",
+      "User-Agent": "Mozilla/5.0"
+    },
+    body: "{}"
+  });
+  return {
+    skipped: false,
+    success: Boolean(data && data.success),
+    cleared: data && data.cleared
+  };
+}
+
+async function refreshWebCache() {
+  if (!redpillWebURL || !redpillWebRevalidateToken) {
+    return { skipped: true, reason: "REDPILL_WEB_URL or REDPILL_WEB_REVALIDATE_TOKEN is not configured" };
+  }
+  const data = await requestJSON(redpillWebURL + "/api/revalidate", {
+    method: "POST",
+    headers: {
+      "X-Revalidate-Token": redpillWebRevalidateToken,
+      "Content-Type": "application/json",
+      "User-Agent": "redpill-node-admin/1.0"
+    }
+  });
+  return {
+    skipped: false,
+    revalidated: Boolean(data && data.revalidated),
+    paths: data && data.paths,
+    tags: data && data.tags
+  };
+}
+
+async function gatewayPreviewSummary() {
+  const preview = await redpillRequest("GET", "/api/admin/gateway-upstreams/preview");
+  return {
+    generated_at: preview.generated_at || null,
+    upstream_count: Array.isArray(preview.upstreams) ? preview.upstreams.length : preview.upstream_count ?? null,
+    route_count: Array.isArray(preview.routes) ? preview.routes.length : preview.route_count ?? null,
+    error_count: Array.isArray(preview.errors) ? preview.errors.length : 0,
+    errors: Array.isArray(preview.errors) ? preview.errors : []
+  };
+}
+
+function normalizeEndpoint(value, appendV1 = true) {
+  let raw = String(value || "").trim();
+  if (!raw) throw new HTTPError(400, "base_url is required");
+  if (!/^https?:\/\//i.test(raw)) raw = `https://${raw}`;
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new HTTPError(400, `invalid base_url: ${value}`);
+  }
+  if (!url.hostname) throw new HTTPError(400, `invalid base_url: ${value}`);
+  url.hash = "";
+  url.search = "";
+  if (appendV1 && (url.pathname === "" || url.pathname === "/")) url.pathname = "/v1";
+  url.pathname = url.pathname.replace(/\/+$/, "");
+  return url.toString().replace(/\/+$/, "");
+}
+
+function pigBaseURL(value) {
+  const normalized = normalizeEndpoint(value, false);
+  const url = new URL(normalized);
+  url.pathname = "";
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\/+$/, "");
 }
 
 function parsePrometheus(text) {
@@ -403,6 +612,10 @@ function parsePrometheus(text) {
   return samples;
 }
 
+function firstSample(samples, name) {
+  return samples.find((sample) => sample.name === name) || null;
+}
+
 function firstMetric(samples, name, labelKey, labelValue) {
   for (const sample of samples) {
     if (sample.name !== name) continue;
@@ -412,478 +625,334 @@ function firstMetric(samples, name, labelKey, labelValue) {
   return null;
 }
 
-function sumMetric(samples, name) {
-  let found = false;
-  let total = 0;
-  for (const sample of samples) {
-    if (sample.name !== name) continue;
-    found = true;
-    total += sample.value;
-  }
-  return found ? total : null;
+function labelValue(samples, name, key) {
+  const sample = firstSample(samples, name);
+  return sample ? sample.labels[key] || "" : "";
 }
 
-function maxMetric(samples, names) {
-  let value = null;
-  for (const sample of samples) {
-    if (!names.includes(sample.name)) continue;
-    if (value === null || sample.value > value) value = sample.value;
-  }
-  return value;
+function nearLimit(value, limit) {
+  const v = Number(value);
+  const l = Number(limit);
+  return Number.isFinite(v) && Number.isFinite(l) && l > 0 && (v >= l || v * 100 >= l * 85);
 }
 
-function parseCombinedMetrics(text) {
+function pigStatus(metrics) {
+  if (!metrics.ok) return "error";
+  if (metrics.waiting > 0 || metrics.queue_current > 0 || metrics.state === "red" || (metrics.backend_count > 0 && metrics.backend_failed >= metrics.backend_count)) {
+    return "red";
+  }
+  if (nearLimit(metrics.running, metrics.global_limit) || nearLimit(metrics.basic_inflight, metrics.basic_limit)) return "yellow";
+  if (metrics.state === "yellow") return "yellow";
+  return "green";
+}
+
+function parsePigMetrics(text) {
   const samples = parsePrometheus(text);
-  const pigRawRunning = firstMetric(samples, "pig_dynamic_observed_running_raw");
-  const pigRawWaiting = firstMetric(samples, "pig_dynamic_observed_waiting_raw");
-  const pigRunning = firstMetric(samples, "pig_dynamic_observed_running");
-  const pigWaiting = firstMetric(samples, "pig_dynamic_observed_waiting");
-  const rawGlobalLimit = firstMetric(samples, "pig_dynamic_global_limit_raw");
-  const globalLimit = firstMetric(samples, "pig_dynamic_global_limit");
-  const predictiveAdmissionEnforce = firstMetric(samples, "pig_predictive_admission_enforce");
-  const routerBackpressureActive = firstMetric(samples, "pig_dynamic_router_backpressure_active")
-    ?? firstMetric(samples, "pig_predictive_router_backpressure_active");
-  const routerBackpressureApplied = firstMetric(samples, "pig_dynamic_router_backpressure_applied")
-    ?? firstMetric(samples, "pig_predictive_router_backpressure_applied");
-  const routerInspectCapacity = firstMetric(samples, "pig_predictive_router_inspect_capacity");
-  const basicLimit = firstMetric(samples, "pig_tier_basic_limit");
-  const basicInflight = firstMetric(samples, "pig_tier_inflight", "tier", "basic");
-  const premiumInflight = firstMetric(samples, "pig_tier_inflight", "tier", "premium");
-  const backendRunning = sumMetric(samples, "vllm:num_requests_running") ?? maxMetric(samples, ["sglang:num_running_reqs"]);
-  const backendWaiting = sumMetric(samples, "vllm:num_requests_waiting") ?? maxMetric(samples, ["sglang:num_queue_reqs"]);
-  const kvUsage = maxMetric(samples, ["vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc", "sglang:token_usage"]);
-  const requestAware = predictiveAdmissionEnforce !== null && predictiveAdmissionEnforce >= 0.5;
-  const legacyGlobalFull = !requestAware
-    && globalLimit !== null
-    && pigRunning !== null
-    && pigRunning >= globalLimit;
-  return {
+  const metrics = {
     ok: true,
-    pig: {
-      ok: true,
-      running: pigRunning,
-      waiting: pigWaiting,
-      raw_running: pigRawRunning,
-      raw_waiting: pigRawWaiting,
-      global_limit: globalLimit,
-      raw_global_limit: rawGlobalLimit,
-      basic_limit: basicLimit,
-      basic_inflight: basicInflight,
-      premium_inflight: premiumInflight,
-      predictive_admission_enforce: requestAware,
-      router_backpressure_active: routerBackpressureActive === null ? null : routerBackpressureActive >= 0.5,
-      router_backpressure_applied: routerBackpressureApplied === null ? null : routerBackpressureApplied >= 0.5,
-      router_inspect_capacity: routerInspectCapacity,
-      full_basic: pigWaiting > 0 || legacyGlobalFull || (basicLimit !== null && basicInflight !== null && basicInflight >= basicLimit),
-      full_premium: pigWaiting > 0 || legacyGlobalFull
-    },
-    backend: {
-      ok: backendRunning !== null || backendWaiting !== null || kvUsage !== null,
-      running: backendRunning,
-      waiting: backendWaiting,
-      kv_usage: kvUsage
-    }
+    version: labelValue(samples, "pig_version_info", "version") || null,
+    state: labelValue(samples, "pig_dynamic_state_info", "state") || null,
+    source: labelValue(samples, "pig_dynamic_state_info", "source") || null,
+    running: firstMetric(samples, "pig_dynamic_observed_running") ?? firstMetric(samples, "pig_inflight", "lane", "global"),
+    waiting: firstMetric(samples, "pig_dynamic_observed_waiting") ?? firstMetric(samples, "pig_queue_current"),
+    queue_current: firstMetric(samples, "pig_queue_current"),
+    global_limit: firstMetric(samples, "pig_dynamic_global_limit"),
+    hard_global_limit: firstMetric(samples, "pig_dynamic_hard_global_limit"),
+    admission_limit: firstMetric(samples, "pig_dynamic_admission_limit"),
+    capacity_limit: firstMetric(samples, "pig_dynamic_capacity_limit"),
+    pressure_limit: firstMetric(samples, "pig_dynamic_pressure_limit"),
+    prefill_limit: firstMetric(samples, "pig_dynamic_prefill_limit"),
+    basic_limit: firstMetric(samples, "pig_tier_basic_limit"),
+    basic_inflight: firstMetric(samples, "pig_tier_inflight", "tier", "basic"),
+    premium_inflight: firstMetric(samples, "pig_tier_inflight", "tier", "premium"),
+    basic_waiting: firstMetric(samples, "pig_tier_waiting", "tier", "basic"),
+    premium_waiting: firstMetric(samples, "pig_tier_waiting", "tier", "premium"),
+    generation_tps: firstMetric(samples, "pig_dynamic_observed_generation_tokens_per_second"),
+    user_tps: firstMetric(samples, "pig_dynamic_observed_single_user_tokens_per_second"),
+    ttft_p95_seconds: firstMetric(samples, "pig_dynamic_observed_ttft_p95_seconds"),
+    ttft_p99_seconds: firstMetric(samples, "pig_dynamic_observed_ttft_p99_seconds"),
+    kv_cache_usage: firstMetric(samples, "pig_dynamic_observed_kv_cache_usage"),
+    capacity_safe_limit: firstMetric(samples, "pig_dynamic_capacity_safe_limit"),
+    capacity_projected_limit: firstMetric(samples, "pig_dynamic_capacity_projected_limit"),
+    capacity_learned_limit: firstMetric(samples, "pig_dynamic_capacity_learned_limit"),
+    capacity_target_limit: firstMetric(samples, "pig_dynamic_capacity_target_limit"),
+    ttft_limit: firstMetric(samples, "pig_dynamic_ttft_limit"),
+    rejected_total: firstMetric(samples, "pig_rejected_total"),
+    dynamic_rejected_total: firstMetric(samples, "pig_dynamic_rejected_total"),
+    backend_count: firstMetric(samples, "pig_dynamic_backend_count") ?? firstMetric(samples, "pig_backend_count"),
+    backend_failed: firstMetric(samples, "pig_dynamic_backend_failed"),
+    updated_unix_seconds: firstMetric(samples, "pig_dynamic_last_update_seconds")
+  };
+  metrics.status = pigStatus(metrics);
+  metrics.sample_count = samples.length;
+  return metrics;
+}
+
+function metricsUnavailable(message, status = "error") {
+  return {
+    ok: false,
+    status,
+    error: message
   };
 }
 
-function cacheKey(router, name) {
-  return `${router.id}:${name}`;
-}
-
-function decorateMetrics(metrics, status, sampledAt, sourceError) {
+function decoratePigMetrics(metrics, freshness, sampledAt, sourceError) {
   const ageSeconds = Math.max(0, Math.round((Date.now() - sampledAt) / 1000));
   const out = {
-    ...cloneJSON(metrics),
-    freshness: status,
-    stale: status === "stale",
-    sampled_at: nowISO(sampledAt),
+    ...metrics,
+    freshness,
+    stale: freshness === "stale",
+    sampled_at: new Date(sampledAt).toISOString(),
     age_seconds: ageSeconds
   };
   if (sourceError) out.source_error = sourceError;
-  for (const section of ["pig", "backend"]) {
-    out[section] = {
-      ...(out[section] || {}),
-      freshness: status,
-      stale: status === "stale",
-      sampled_at: out.sampled_at,
-      age_seconds: ageSeconds
-    };
-    if (sourceError && status === "stale") out[section].source_error = sourceError;
-  }
   return out;
 }
 
-function metricsUnavailable(message) {
-  return {
-    ok: false,
-    freshness: "error",
-    stale: false,
-    pig: { ok: false, error: message },
-    backend: { ok: false, error: message }
-  };
-}
-
-function staleMetrics(key, message) {
-  const cached = metricsCache.get(key);
-  if (cacheFresh(cached, metricsStaleTtlMs)) {
-    return decorateMetrics(cached.metrics, "stale", cached.at, message);
+function stalePigMetrics(key, message) {
+  const cached = pigMetricsCache.get(key);
+  if (cacheFresh(cached, pigMetricsStaleTtlMs)) {
+    return decoratePigMetrics(cached.metrics, "stale", cached.at, message);
   }
   return metricsUnavailable(message);
 }
 
-async function fetchMetrics(baseURL) {
-  const url = normalizedBaseURL(baseURL);
-  if (!url) {
-    return { ok: false, pig: { ok: false, error: "not configured" }, backend: { ok: false, error: "not configured" } };
+async function fetchPigMetrics(baseURL, force = false) {
+  const base = pigBaseURL(baseURL);
+  const cached = pigMetricsCache.get(base);
+  if (!force && cacheFresh(cached, pigMetricsCacheTtlMs)) {
+    return decoratePigMetrics(cached.metrics, "fresh", cached.at);
   }
-  const key = url;
+  if (!pigAdminToken) return metricsUnavailable("PIG_ADMIN_TOKEN is not configured");
   try {
-    const response = await fetchText(url + "/v1/metrics", {
+    const response = await fetchWithTimeout(base + pigMetricsPath, {
       headers: {
-        Authorization: `Bearer ${gatewayToken}`,
+        Authorization: `Bearer ${pigAdminToken}`,
         Accept: "text/plain"
       },
-      timeoutMs
+      timeoutMs: pigRequestTimeoutMs
     });
-    if (!response.ok) {
-      return staleMetrics(key, `HTTP ${response.status}`);
-    }
-    const parsed = parseCombinedMetrics(response.text);
+    const text = await response.text();
+    if (!response.ok) return stalePigMetrics(base, `HTTP ${response.status}: ${compactUpstreamError(text)}`);
+    const parsed = parsePigMetrics(text);
     const sampledAt = Date.now();
-    metricsCache.set(key, { metrics: cloneJSON(parsed), at: sampledAt });
-    return decorateMetrics(parsed, "fresh", sampledAt);
+    pigMetricsCache.set(base, { metrics: parsed, at: sampledAt });
+    return decoratePigMetrics(parsed, "fresh", sampledAt);
   } catch (err) {
-    const message = String(err && err.message ? err.message : err);
-    return staleMetrics(key, message);
+    return stalePigMetrics(base, errorMessage(err));
   }
 }
 
-function numberOrZero(value) {
-  return Number.isFinite(Number(value)) ? Number(value) : 0;
-}
-
-function routeFor(upstream, routes) {
-  const models = Object.keys(upstream.models || {});
-  return routes.find((route) => route.upstream_name === upstream.name && models.includes(route.public_model))
-    || routes.find((route) => route.upstream_name === upstream.name)
-    || null;
-}
-
-function errorMessage(err) {
-  return String(err && err.message ? err.message : err);
-}
-
-function cachedGatewaySnapshot(router, name, result, fallback) {
-  const key = cacheKey(router, name);
-  if (result.status === "fulfilled") {
-    const value = result.value || fallback;
-    controlCache.set(key, { value: cloneJSON(value), at: Date.now() });
-    return { value, stale: false, warning: "", error: "" };
-  }
-  const message = errorMessage(result.reason);
-  const cached = controlCache.get(key);
-  if (cacheFresh(cached, controlStaleTtlMs)) {
-    const ageSeconds = Math.max(0, Math.round((Date.now() - cached.at) / 1000));
+async function pigSnapshot(url) {
+  const modelID = Number(url.searchParams.get("model_id"));
+  const force = boolFromSearch(url, "force", false);
+  if (!Number.isInteger(modelID) || modelID <= 0) throw new HTTPError(400, "model_id must be a positive integer");
+  const deployments = (await listDeployments(modelID, false)).deployments;
+  const nodes = await Promise.all(deployments.map(async (deployment) => {
+    if (!deployment.active) {
+      return {
+        deployment_id: deployment.id,
+        deployment_name: deployment.deployment_name,
+        active: false,
+        base_url: deployment.base_url,
+        pig_base_url: deployment.base_url ? pigBaseURL(deployment.base_url) : "",
+        host: hostFromEndpoint(deployment.base_url),
+        pig: metricsUnavailable("Redpill listing is inactive", "disabled")
+      };
+    }
+    const pig = deployment.base_url
+      ? await fetchPigMetrics(deployment.base_url, force)
+      : metricsUnavailable("deployment has no base_url");
     return {
-      value: {
-        ...cloneJSON(cached.value),
-        stale: true,
-        sampled_at: nowISO(cached.at),
-        age_seconds: ageSeconds,
-        source_error: message
-      },
-      stale: true,
-      warning: `${name} stale ${ageSeconds}s: ${message}`,
-      error: ""
-    };
-  }
-  return { value: { ...fallback, error: message }, stale: false, warning: "", error: message };
-}
-
-async function buildRuntimeSnapshot(router) {
-  const [upstreamsResult, routerResult, modelsResult] = await Promise.allSettled([
-    gatewayJSON(router, "GET", "/v1/admin/upstreams"),
-    gatewayJSON(router, "GET", "/v1/admin/router"),
-    gatewayJSON(router, "GET", "/v1/models")
-  ]);
-  const upstreamsResolved = cachedGatewaySnapshot(router, "upstreams", upstreamsResult, { upstreams: [] });
-  const routerResolved = cachedGatewaySnapshot(router, "router", routerResult, { routes: [] });
-  const modelsResolved = cachedGatewaySnapshot(router, "models", modelsResult, { data: [] });
-  const upstreamsSnapshot = upstreamsResolved.value;
-  const routerSnapshot = routerResolved.value;
-  const modelsSnapshot = modelsResolved.value;
-  const upstreams = upstreamsSnapshot.upstreams || [];
-  const routes = routerSnapshot.routes || [];
-  const nodes = await Promise.all(upstreams.map(async (upstream) => {
-    const enabled = upstream.enabled !== false;
-    const route = routeFor(upstream, routes);
-    const directMetrics = enabled
-      ? await fetchMetrics(upstream.base_url)
-      : { ok: false, pig: { ok: false }, backend: { ok: false } };
-    const pig = mergeRouterPigMetrics(directMetrics.pig || {}, route || {});
-    const health = enabled ? (pig.stale ? "metrics_stale" : (pig.ok ? "healthy" : "metrics_error")) : "disabled";
-    const capacity = buildCapacityView({ enabled, metricsStatus: health, route: route || {}, pig });
-    return {
-      ...upstream,
-      id: upstream.name,
-      enabled,
-      use_shared_bearer: upstream.bearer_token_configured !== false,
-      route,
-      runtime: {
-        router: route || {},
-        pig,
-        backend: directMetrics.backend || {},
-        capacity
-      },
-      health: {
-        status: health,
-        reason: !enabled
-          ? ""
-          : directMetrics.stale
-          ? `showing ${directMetrics.age_seconds}s old metrics; ${directMetrics.source_error || "latest metrics unavailable"}`
-          : (directMetrics.ok ? "" : (directMetrics.pig?.error || directMetrics.backend?.error || "metrics unavailable"))
-      }
+      deployment_id: deployment.id,
+      deployment_name: deployment.deployment_name,
+      active: deployment.active,
+      base_url: deployment.base_url,
+      pig_base_url: deployment.base_url ? pigBaseURL(deployment.base_url) : "",
+      host: hostFromEndpoint(deployment.base_url),
+      pig
     };
   }));
-  const summary = {
-    nodes: nodes.length,
-    enabled_nodes: nodes.filter((node) => node.enabled).length,
-    selectable_nodes: nodes.filter((node) => node.runtime?.capacity?.selectable).length,
-    request_aware_nodes: nodes.filter((node) => node.enabled && node.runtime?.capacity?.request_aware).length,
-    protected_nodes: nodes.filter((node) => node.runtime?.capacity?.state === "protected").length,
-    invalid_protocol_nodes: nodes.filter((node) => node.runtime?.capacity?.state === "protocol_invalid").length,
-    routes: routes.length,
-    router_running: routes.reduce((sum, route) => sum + numberOrZero(route.running), 0),
-    pig_running: nodes.reduce((sum, node) => sum + numberOrZero(node.runtime?.pig?.running), 0),
-    backend_running: nodes.reduce((sum, node) => sum + numberOrZero(node.runtime?.backend?.running), 0),
-    waiting: nodes.reduce((sum, node) => sum + numberOrZero(node.runtime?.backend?.waiting ?? node.runtime?.pig?.waiting), 0),
-    processed: routes.reduce((sum, route) => sum + numberOrZero(route.processed), 0),
-    cache_selected: routes.reduce((sum, route) => sum + numberOrZero(route.selected_by_cache), 0),
-    load_selected: routes.reduce((sum, route) => sum + numberOrZero(route.selected_by_load), 0),
-    order_selected: routes.reduce((sum, route) => sum + numberOrZero(route.selected_by_order), 0),
-    upstream_attempts: routes.reduce((sum, route) => sum + numberOrZero(route.upstream_attempts), 0),
-    upstream_429: routes.reduce((sum, route) => sum + numberOrZero(route.upstream_429), 0),
-    pending_reservations: routes.reduce((sum, route) => sum + numberOrZero(route.pending_reservations), 0),
-    dispatch_debt: routes.reduce((sum, route) => sum + numberOrZero(route.unreconciled_dispatches), 0),
-    stale_nodes: nodes.filter((node) => node.health?.status === "metrics_stale").length
-  };
-  const warnings = [upstreamsResolved, routerResolved, modelsResolved].map((item) => item.warning).filter(Boolean);
-  const errors = [upstreamsResolved, routerResolved, modelsResolved].map((item) => item.error).filter(Boolean);
+  const summary = summarizePigNodes(nodes);
   return {
+    model_id: modelID,
     generated_at: new Date().toISOString(),
-    selected_router: publicRouters().find((item) => item.id === router.id),
-    routers: publicRouters(),
-    gateway: {
-      url: router.url,
-      config_path: upstreamsSnapshot.config_path,
-      config_digest: upstreamsSnapshot.config_digest,
-      router_digest: routerSnapshot.upstream_config_digest,
-      stale: warnings.length > 0,
-      warning: warnings.join("; ") || null,
-      error: errors.join("; ") || null
-    },
-    router: routerSnapshot,
-    models: modelsSnapshot,
     nodes,
     summary
   };
 }
 
-function markRuntimeCache(snapshot, cachedAt, refreshInFlight) {
-  const out = cloneJSON(snapshot);
-  const ageSeconds = Math.max(0, Math.round((Date.now() - cachedAt) / 1000));
-  out.served_at = new Date().toISOString();
-  out.snapshot_cache = {
-    status: refreshInFlight ? "cached" : "fresh",
-    age_seconds: ageSeconds,
-    refresh_in_progress: Boolean(refreshInFlight),
-    max_age_seconds: Math.round(runtimeStaleTtlMs / 1000)
-  };
-  return out;
+function sumNumber(list, selector) {
+  return list.reduce((sum, item) => {
+    const value = Number(selector(item));
+    return Number.isFinite(value) ? sum + value : sum;
+  }, 0);
 }
 
-function runtimeSnapshotCacheable(snapshot) {
-  return !snapshot.gateway?.error || (snapshot.nodes || []).length > 0;
-}
-
-async function refreshRuntimeCache(router) {
-  const key = router.id;
-  const existing = runtimeCache.get(key);
-  if (existing?.promise) return existing.promise;
-  const promise = buildRuntimeSnapshot(router)
-    .then((snapshot) => {
-      if (runtimeSnapshotCacheable(snapshot)) {
-        const entry = { snapshot: cloneJSON(snapshot), at: Date.now(), promise: null };
-        runtimeCache.set(key, entry);
-      } else if (existing?.snapshot) {
-        runtimeCache.set(key, { ...existing, promise: null });
-      } else {
-        runtimeCache.delete(key);
-      }
-      return snapshot;
-    })
-    .catch((err) => {
-      if (existing) runtimeCache.set(key, { ...existing, promise: null });
-      throw err;
-    });
-  runtimeCache.set(key, { ...(existing || {}), promise });
-  return promise;
-}
-
-async function runtimeSnapshot(router) {
-  const key = router.id;
-  const cached = runtimeCache.get(key);
-  if (cached?.snapshot && cacheFresh(cached, runtimeStaleTtlMs)) {
-    if (!cached.promise) {
-      refreshRuntimeCache(router).catch((err) => {
-        console.error(`runtime refresh failed for ${router.id}: ${err.message}`);
-      });
-    }
-    return markRuntimeCache(cached.snapshot, cached.at, true);
-  }
-  const snapshot = await refreshRuntimeCache(router);
-  const updated = runtimeCache.get(key);
-  return markRuntimeCache(snapshot, updated?.at || Date.now(), false);
-}
-
-function normalizeNode(input, router) {
-  const name = String(input.name || "").trim();
-  if (!name) throw new Error("node name is required");
-  const baseURL = String(input.base_url || "").trim().replace(/\/+$/, "");
-  if (!baseURL) throw new Error("base URL is required");
-  const publicModel = String(input.public_model || router.default_public_model).trim();
-  const upstreamModel = String(input.upstream_model || router.default_upstream_model || publicModel).trim();
+function summarizePigNodes(nodes) {
+  const active = nodes.filter((node) => node.active);
+  const statuses = active.map((node) => node.pig?.status || "error");
+  const worst = statuses.includes("red") || statuses.includes("error")
+    ? "red"
+    : statuses.includes("yellow") ? "yellow" : active.length > 0 ? "green" : "unknown";
   return {
-    name,
-    enabled: input.enabled !== false,
-    provider: String(input.provider || router.default_provider || "phala-direct").trim(),
-    base_url: baseURL,
-    models: { [publicModel]: upstreamModel },
-    bearer_token: input.use_shared_bearer === false ? undefined : sharedBearerToken(),
-    path: String(input.path || "/v1/chat/completions").trim(),
-    connect_timeout_seconds: 10,
-    read_timeout_seconds: 1800,
-    verifier_request_timeout_seconds: 15,
-    verification_refresh_seconds: 300,
-    session_refresh_seconds: 300
+    status: worst,
+    total_nodes: nodes.length,
+    active_nodes: active.length,
+    green_nodes: active.filter((node) => node.pig?.status === "green").length,
+    yellow_nodes: active.filter((node) => node.pig?.status === "yellow").length,
+    red_nodes: active.filter((node) => node.pig?.status === "red").length,
+    error_nodes: active.filter((node) => node.pig?.ok === false).length,
+    running: sumNumber(active, (node) => node.pig?.running),
+    waiting: sumNumber(active, (node) => node.pig?.waiting),
+    basic_inflight: sumNumber(active, (node) => node.pig?.basic_inflight),
+    premium_inflight: sumNumber(active, (node) => node.pig?.premium_inflight),
+    limit: sumNumber(active, (node) => node.pig?.global_limit)
   };
 }
 
-function copyIfPresent(input, output, key) {
-  if (Object.prototype.hasOwnProperty.call(input, key) && input[key] !== undefined) {
-    output[key] = input[key];
+function requirePigToken() {
+  if (!pigAdminToken) throw new HTTPError(500, "PIG_ADMIN_TOKEN is not configured");
+}
+
+function normalizeTPSReference(value) {
+  if (typeof value === "string" && value.trim() === "") {
+    throw new HTTPError(400, "TPS reference must be an integer in [0, 1000000]");
   }
-}
-
-function upstreamForWrite(input) {
-  const out = {};
-  for (const key of [
-    "name",
-    "enabled",
-    "provider",
-    "base_url",
-    "path",
-    "models",
-    "accepted_workload_ids",
-    "accepted_image_digests",
-    "accepted_dstack_kms_root_public_keys",
-    "pccs_url",
-    "verifier_cache_seconds",
-    "connect_timeout_seconds",
-    "read_timeout_seconds",
-    "verifier_request_timeout_seconds",
-    "verification_refresh_seconds",
-    "session_refresh_seconds",
-    "chutes_e2ee_api_base",
-    "chutes_chute_ids",
-    "chutes_e2ee_discovery_rounds",
-    "chutes_e2ee_discovery_interval_seconds"
-  ]) {
-    copyIfPresent(input, out, key);
+  const tpsReference = Number(value);
+  if (!Number.isInteger(tpsReference) || tpsReference < 0 || tpsReference > 1000000) {
+    throw new HTTPError(400, "TPS reference must be an integer in [0, 1000000]");
   }
+  return tpsReference;
+}
 
-  if (input.bearer_token === "${TOKEN}") {
-    out.bearer_token = sharedBearerToken();
-  } else if (typeof input.bearer_token === "string" && input.bearer_token) {
-    out.bearer_token = input.bearer_token;
-  } else if (input.use_shared_bearer === true || input.bearer_token_configured === true) {
-    out.bearer_token = sharedBearerToken();
+function normalizeOptionalInteger(value, label, min, max) {
+  if (value === undefined) return undefined;
+  if (typeof value === "string" && value.trim() === "") {
+    throw new HTTPError(400, `${label} must be an integer in [${min}, ${max}]`);
   }
-
-  return out;
-}
-
-async function getUpstreams(router) {
-  const snapshot = await gatewayJSON(router, "GET", "/v1/admin/upstreams");
-  return snapshot.upstreams || [];
-}
-
-async function putUpstreamList(router, upstreams) {
-  return gatewayJSON(router, "PUT", "/v1/admin/upstreams", upstreams.map(upstreamForWrite));
-}
-
-async function addOrUpdateNode(req, res, router) {
-  const body = await readBody(req);
-  const input = JSON.parse(body.toString("utf8") || "{}");
-  const node = normalizeNode(input, router);
-  const upstreams = await getUpstreams(router);
-  const index = upstreams.findIndex((item) => item.name === node.name);
-  if (index >= 0) upstreams[index] = { ...upstreams[index], ...node };
-  else upstreams.push(node);
-  sendJSON(res, 200, await putUpstreamList(router, upstreams));
-}
-
-async function setNodeEnabled(req, res, router, id) {
-  const body = await readBody(req);
-  const input = JSON.parse(body.toString("utf8") || "{}");
-  const upstreams = await getUpstreams(router);
-  const node = upstreams.find((item) => item.name === id);
-  if (!node) throw new Error(`node not found: ${id}`);
-  node.enabled = input.enabled !== false;
-  sendJSON(res, 200, await putUpstreamList(router, upstreams));
-}
-
-async function removeNode(res, router, id) {
-  const upstreams = await getUpstreams(router);
-  const next = upstreams.filter((item) => item.name !== id);
-  if (next.length === upstreams.length) throw new Error(`node not found: ${id}`);
-  sendJSON(res, 200, await putUpstreamList(router, next));
-}
-
-async function putUpstreams(req, res, router) {
-  const body = await readBody(req);
-  const input = JSON.parse(body.toString("utf8") || "[]");
-  if (!Array.isArray(input)) throw new Error("raw upstream config must be an array");
-  sendJSON(res, 200, await putUpstreamList(router, input));
-}
-
-function contentTypeFor(filePath) {
-  const ext = path.extname(filePath);
-  if (ext === ".html") return "text/html; charset=utf-8";
-  if (ext === ".css") return "text/css; charset=utf-8";
-  if (ext === ".js") return "application/javascript; charset=utf-8";
-  if (ext === ".json") return "application/json; charset=utf-8";
-  return "application/octet-stream";
-}
-
-function serveStatic(req, res, pathname) {
-  const name = pathname === "/" ? "/index.html" : pathname;
-  const resolved = path.resolve(staticRoot, "." + decodeURIComponent(name));
-  if (!resolved.startsWith(staticRoot + path.sep)) {
-    sendText(res, 403, "forbidden\n");
-    return;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < min || number > max) {
+    throw new HTTPError(400, `${label} must be an integer in [${min}, ${max}]`);
   }
-  fs.readFile(resolved, (err, data) => {
-    if (err) {
-      sendText(res, 404, "not found\n");
-      return;
+  return number;
+}
+
+function normalizePigPolicyPatch(input) {
+  const payload = { ...input };
+  const hasTPS = Object.hasOwn(input, "tps_reference");
+  const hasWindowConcurrency = Object.hasOwn(input, "window_concurrency");
+  const hasRunningLimit = Object.hasOwn(input, "running_limit");
+  if (!hasTPS && !hasWindowConcurrency && !hasRunningLimit) {
+    throw new HTTPError(400, "PIG policy patch must include tps_reference, window_concurrency, or running_limit");
+  }
+  if (hasTPS) payload.tps_reference = normalizeTPSReference(input.tps_reference);
+  if (hasWindowConcurrency) {
+    payload.window_concurrency = normalizeOptionalInteger(input.window_concurrency, "Window concurrency", 1, 1000000);
+  }
+  if (hasRunningLimit) payload.running_limit = normalizeOptionalInteger(input.running_limit, "Running limit", 0, 1000000);
+  if (Object.hasOwn(input, "expected_revision")) {
+    payload.expected_revision = normalizeOptionalInteger(input.expected_revision, "Expected revision", 1, 1000000000);
+  }
+  return payload;
+}
+
+function parsePolicyJSON(response) {
+  try {
+    const data = response.text ? JSON.parse(response.text) : {};
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      throw new Error("policy response is not a JSON object");
     }
-    res.writeHead(200, {
-      "Content-Type": contentTypeFor(resolved),
-      "Cache-Control": "no-store"
-    });
-    res.end(data);
+    return data;
+  } catch (err) {
+    throw new HTTPError(502, `PIG policy response is not valid JSON: ${errorMessage(err)}`);
+  }
+}
+
+async function pigPolicyRequest(baseURL, method, payload) {
+  requirePigToken();
+  const headers = {
+    Authorization: `Bearer ${pigAdminToken}`,
+    Accept: "application/json"
+  };
+  let body;
+  if (payload !== undefined) {
+    body = Buffer.from(JSON.stringify(payload));
+    headers["Content-Type"] = "application/json";
+  }
+  const upstream = await fetchWithTimeout(pigBaseURL(baseURL) + pigPolicyPath, {
+    method,
+    headers,
+    body,
+    timeoutMs: pigRequestTimeoutMs
   });
+  return {
+    status: upstream.status,
+    text: await upstream.text(),
+    contentType: upstream.headers.get("content-type") || "application/json; charset=utf-8"
+  };
+}
+
+async function readPigPolicyFromNode(baseURL) {
+  const response = await pigPolicyRequest(baseURL, "GET");
+  if (response.status < 200 || response.status >= 300) {
+    throw new HTTPError(response.status, `PIG policy read failed: HTTP ${response.status} ${compactUpstreamError(response.text)}`);
+  }
+  const policy = parsePolicyJSON(response);
+  const revision = Number(policy.revision);
+  if (!Number.isFinite(revision) || revision <= 0) {
+    throw new HTTPError(502, "PIG policy response has no positive numeric revision");
+  }
+  return policy;
+}
+
+async function patchPigPolicyDirect(baseURL, patch) {
+  let latestResponse = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const policy = await readPigPolicyFromNode(baseURL);
+    const revision = Number(policy.revision);
+    latestResponse = await pigPolicyRequest(baseURL, "PATCH", { ...patch, expected_revision: revision });
+    if (latestResponse.status !== 409) return latestResponse;
+  }
+  return latestResponse;
+}
+
+async function deploymentForPigPolicy(url) {
+  const modelID = Number(url.searchParams.get("model_id"));
+  const deploymentID = Number(url.searchParams.get("deployment_id"));
+  if (!Number.isInteger(modelID) || modelID <= 0) throw new HTTPError(400, "model_id must be a positive integer");
+  if (!Number.isInteger(deploymentID) || deploymentID <= 0) throw new HTTPError(400, "deployment_id must be a positive integer");
+  return requireManagedDeployment(modelID, deploymentID);
+}
+
+async function proxyPigPolicy(req, res, url) {
+  const deployment = await deploymentForPigPolicy(url);
+  let upstream;
+  if (req.method === "PATCH") {
+    const input = await readJSON(req, pigPolicyBodyLimit);
+    const payload = normalizePigPolicyPatch(input);
+    if (Object.hasOwn(input, "expected_revision")) {
+      upstream = await pigPolicyRequest(deployment.base_url, "PATCH", payload);
+    } else {
+      upstream = await patchPigPolicyDirect(deployment.base_url, payload);
+    }
+  } else {
+    upstream = await pigPolicyRequest(deployment.base_url, req.method);
+  }
+  res.writeHead(upstream.status, {
+    "Content-Type": upstream.contentType,
+    "Cache-Control": "no-store"
+  });
+  res.end(upstream.text);
+}
+
+function parseIDFromPath(pathname, prefix, suffix = "") {
+  if (!pathname.startsWith(prefix)) return null;
+  if (suffix && !pathname.endsWith(suffix)) return null;
+  const raw = pathname.slice(prefix.length, suffix ? -suffix.length : undefined);
+  const id = Number(decodeURIComponent(raw));
+  if (!Number.isInteger(id) || id <= 0) throw new HTTPError(400, "id must be a positive integer");
+  return id;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -891,66 +960,71 @@ const server = http.createServer(async (req, res) => {
     if (!requireAuth(req, res)) return;
     const url = new URL(req.url, "http://localhost");
 
-    if (req.method === "GET" && (url.pathname === "/" || url.pathname.startsWith("/assets/") || url.pathname.startsWith("/vendor/"))) {
+    if (req.method === "GET" && (url.pathname === "/" || url.pathname.startsWith("/assets/"))) {
       serveStatic(req, res, url.pathname);
       return;
     }
-    if (req.method === "GET" && url.pathname === "/api/routers") {
-      sendJSON(res, 200, { routers: publicRouters() });
-      return;
-    }
-
-    const router = selectedRouter(url);
     if (req.method === "GET" && url.pathname === "/api/health") {
-      sendJSON(res, 200, { status: "ok", routers: routers.length, selected_router: router.id });
-      return;
-    }
-    if (req.method === "GET" && url.pathname === "/api/runtime") {
-      sendJSON(res, 200, await runtimeSnapshot(router));
-      return;
-    }
-    if (req.method === "GET" && url.pathname === "/api/router") {
-      await proxyGateway(req, res, router, "/v1/admin/router");
+      sendJSON(res, 200, {
+        status: "ok",
+        redpill_api_url: redpillAPIURL || null,
+        redpill_api_configured: Boolean(redpillAPIURL && redpillAPIKey),
+        control_cache_configured: Boolean(privateAIControlURL),
+        web_cache_configured: Boolean(redpillWebURL && redpillWebRevalidateToken),
+        pig_admin_configured: Boolean(pigAdminToken),
+        phala_providers: phalaProviders,
+        phala_host_suffixes: phalaHostSuffixes,
+        model_cache_ttl_ms: modelCacheTtlMs,
+        deployment_cache_ttl_ms: deploymentCacheTtlMs,
+        sync_after_write_default: syncAfterWriteDefault
+      });
       return;
     }
     if (req.method === "GET" && url.pathname === "/api/models") {
-      await proxyGateway(req, res, router, "/v1/models");
+      sendJSON(res, 200, await listModels(url));
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/deployments") {
+      sendJSON(res, 200, await listDeployments(Number(url.searchParams.get("model_id")), boolFromSearch(url, "force", false)));
+      return;
+    }
+    const modelDeploymentsID = parseIDFromPath(url.pathname, "/api/models/", "/deployments");
+    if (req.method === "GET" && modelDeploymentsID !== null) {
+      sendJSON(res, 200, await listDeployments(modelDeploymentsID, boolFromSearch(url, "force", false)));
+      return;
+    }
+    const deploymentActiveID = parseIDFromPath(url.pathname, "/api/deployments/", "/active");
+    if (req.method === "PATCH" && deploymentActiveID !== null) {
+      sendJSON(res, 200, await setDeploymentActive(req, deploymentActiveID));
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/deployments/active-bulk") {
+      sendJSON(res, 200, await bulkSetDeploymentActive(req));
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/pig/snapshot") {
+      sendJSON(res, 200, await pigSnapshot(url));
       return;
     }
     if ((req.method === "GET" || req.method === "PATCH") && url.pathname === "/api/pig-policy") {
-      await proxyPigPolicy(req, res, router, url);
+      await proxyPigPolicy(req, res, url);
       return;
     }
-    if (url.pathname === "/api/upstreams") {
-      if (req.method === "GET") {
-        await proxyGateway(req, res, router, "/v1/admin/upstreams");
-        return;
-      }
-      if (req.method === "PUT") {
-        await putUpstreams(req, res, router);
-        return;
-      }
-    }
-    if (req.method === "POST" && url.pathname === "/api/nodes") {
-      await addOrUpdateNode(req, res, router);
+    if (req.method === "GET" && url.pathname === "/api/gateway-preview") {
+      sendJSON(res, 200, await gatewayPreviewSummary());
       return;
     }
-    if (url.pathname.startsWith("/api/nodes/") && url.pathname.endsWith("/enabled")) {
-      const id = decodeURIComponent(url.pathname.slice("/api/nodes/".length, -"/enabled".length));
-      await setNodeEnabled(req, res, router, id);
+    if (req.method === "POST" && url.pathname === "/api/sync") {
+      sendJSON(res, 200, await propagateAll());
       return;
     }
-    if (req.method === "DELETE" && url.pathname.startsWith("/api/nodes/")) {
-      const id = decodeURIComponent(url.pathname.slice("/api/nodes/".length));
-      await removeNode(res, router, id);
-      return;
-    }
+
     sendJSON(res, 404, { error: "not found" });
   } catch (err) {
-    sendJSON(res, 502, { error: String(err && err.message ? err.message : err) });
+    sendError(res, err);
   }
 });
 
 server.listen(port, "0.0.0.0", () => {
-  console.log(`router admin page listening on ${port}, routers=${routers.map((router) => router.id).join(",")}`);
+  console.log(`phala node admin listening on ${port}, api=${redpillAPIURL || "unconfigured"}, pig_admin=${pigAdminToken ? "configured" : "missing"}`);
 });

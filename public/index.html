@@ -3,176 +3,122 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Phala Router Admin</title>
+  <title>Phala Node Admin</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
   <header class="app-header">
     <div class="brand-block">
-      <div class="brand-mark">PRA</div>
+      <div class="brand-mark">PNA</div>
       <div>
-        <h1>Phala Router Admin</h1>
-        <div class="header-subtitle">TEE routing control plane</div>
+        <h1>Phala Node Admin</h1>
+        <div class="header-subtitle">Redpill Phala listings and PIG hot policy</div>
       </div>
     </div>
-    <div class="router-control">
-      <label class="router-label">
-        <span>Router</span>
-        <select id="router-select"></select>
+    <div class="header-actions">
+      <label>
+        <span>Search models</span>
+        <input id="model-search" placeholder="qwen, gemma, deepseek">
       </label>
-      <label class="theme-label">
-        <span>Version</span>
-        <select id="theme-select">
-          <option value="phala-terminal">A. Phala Terminal</option>
-          <option value="vast-console">B. Vast Fleet</option>
-          <option value="clean-ops">C. Clean Ops</option>
-          <option value="signal-board">D. Signal Board</option>
-          <option value="mesh-topology">E. Mesh Topology</option>
+      <label>
+        <span>Model state</span>
+        <select id="model-active-filter">
+          <option value="all">All models</option>
+          <option value="active">Active only</option>
+          <option value="inactive">Inactive only</option>
         </select>
       </label>
-      <button id="new-node-btn" class="primary" type="button">New node</button>
-      <button id="refresh-btn" class="primary" type="button">Refresh</button>
+      <button id="refresh-btn" class="primary" type="button">Refresh Redpill</button>
+      <button id="pig-refresh-btn" type="button">Refresh PIG</button>
+      <button id="sync-btn" type="button">Sync gateway/cache</button>
     </div>
     <div id="status-line" class="status-line">loading</div>
   </header>
 
-  <main id="app-main">
-    <section id="summary" class="summary-grid layout-summary"></section>
+  <main>
+    <section id="summary" class="summary-grid"></section>
 
-    <section class="panel layout-topology">
+    <section class="panel model-panel">
       <div class="panel-title">
-        <span>Topology mesh</span>
-        <span class="panel-subtitle">router-to-upstream signal graph</span>
+        <span>Models</span>
+        <span id="model-count" class="panel-subtitle">-</span>
       </div>
-      <div id="topology" class="topology-canvas"></div>
+      <div id="model-list" class="model-list"></div>
     </section>
 
-    <section class="panel layout-cards">
+    <section class="panel pig-panel">
       <div class="panel-title">
-        <span>Fleet cards</span>
-        <span class="panel-subtitle">node-first control surface</span>
+        <span id="pig-panel-title">PIG runtime</span>
+        <span id="pig-panel-subtitle" class="panel-subtitle">waiting for metrics</span>
       </div>
-      <div id="node-cards" class="node-card-grid"></div>
+      <canvas id="running-chart"></canvas>
+      <div class="pig-policy">
+        <div class="policy-head">
+          <div>
+            <div class="policy-title">PIG hot policy</div>
+            <div id="pig-policy-target" class="subline mono">select a Phala node</div>
+          </div>
+          <div class="policy-actions">
+            <button id="pig-policy-refresh-btn" type="button" disabled>Load policy</button>
+            <button id="pig-policy-save-btn" class="primary" type="button" disabled>Save policy</button>
+          </div>
+        </div>
+        <div class="policy-grid">
+          <label>Load TPS<input id="pig-tps-reference" inputmode="numeric" placeholder="25"></label>
+          <label>Window concurrency<input id="pig-window-concurrency" inputmode="numeric" placeholder="32"></label>
+          <label>Running limit<input id="pig-running-limit" inputmode="numeric" placeholder="0"></label>
+          <div class="policy-meta">
+            <span>revision <strong id="pig-policy-revision" class="mono">-</strong></span>
+            <span>source <strong id="pig-policy-source" class="mono">-</strong></span>
+            <span>mode <strong id="pig-policy-mode" class="mono">-</strong></span>
+          </div>
+        </div>
+        <div id="pig-policy-message" class="subline mono">select a node</div>
+      </div>
     </section>
 
-    <section class="panel layout-nodes">
-      <div class="panel-title">Nodes</div>
+    <section class="panel deployments-panel">
+      <div class="panel-title">
+        <span id="deployments-title">Phala deployments</span>
+        <span id="deployments-subtitle" class="panel-subtitle">select a model</span>
+      </div>
+      <div class="deployment-toolbar">
+        <button id="select-active-btn" type="button">Select active</button>
+        <button id="select-inactive-btn" type="button">Select inactive</button>
+        <button id="clear-selection-btn" type="button">Clear</button>
+        <button id="bulk-up-btn" class="primary" type="button">Up selected</button>
+        <button id="bulk-down-btn" class="danger" type="button">Down selected</button>
+      </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Enabled</th>
-              <th>Node</th>
+              <th>Select</th>
+              <th>Listing</th>
+              <th>Deployment</th>
               <th>Endpoint</th>
-              <th>PIG capacity</th>
-              <th>Backend</th>
-              <th>Router state</th>
-              <th>Selections</th>
-              <th>Health</th>
+              <th>PIG load</th>
+              <th>QoS signals</th>
+              <th>Weight</th>
+              <th>Updated</th>
               <th>Actions</th>
             </tr>
           </thead>
-          <tbody id="nodes-body"></tbody>
+          <tbody id="deployments-body"></tbody>
         </table>
       </div>
     </section>
 
-  </main>
-
-  <aside id="workspace-drawer" class="workspace-drawer" aria-hidden="true">
-    <button id="workspace-drawer-toggle" class="workspace-drawer-tab" type="button" aria-expanded="false" aria-controls="workspace-drawer-content">
-      <span class="drawer-arrow" aria-hidden="true">^</span>
-      <span>Setup / raw config</span>
-    </button>
-    <div id="workspace-drawer-content" class="workspace-drawer-content">
-      <section class="panel layout-editor">
+    <section class="panel log-panel">
       <div class="panel-title">
-        <span>Add or update node</span>
-        <button id="close-editor-btn" class="drawer-close" type="button">Close</button>
-      </div>
-      <div class="form-grid">
-        <label>Name<input id="node-name" placeholder="node-name"></label>
-        <label>Base URL<input id="base-url" placeholder="https://example.phala.com"></label>
-        <label>Provider<input id="provider"></label>
-        <label>Public model<input id="public-model"></label>
-        <label>Upstream model<input id="upstream-model"></label>
-        <label>Shared bearer
-          <select id="use-shared-bearer">
-            <option value="true">true</option>
-            <option value="false">false</option>
-          </select>
-        </label>
-        <label>Path<input id="path" value="/v1/chat/completions"></label>
-        <button id="save-btn" class="primary" type="button">Save node</button>
-        <button id="load-btn" type="button">Setup selected</button>
-        <button id="raw-btn" type="button">Edit raw</button>
-      </div>
-      <div class="pig-policy-panel">
-        <div class="pig-policy-head">
-          <div>
-            <div class="pig-policy-title">PIG runtime policy</div>
-            <div id="pig-policy-target" class="subline mono">select a node</div>
-          </div>
-        </div>
-        <div class="pig-policy-grid">
-          <div class="policy-control-group">
-            <label>TPS reference<input id="pig-tps-reference" type="number" min="0" max="1000000" step="1" inputmode="numeric" placeholder="-"></label>
-            <div class="pig-policy-actions">
-              <button id="pig-policy-refresh-btn" type="button">Load TPS</button>
-              <button id="pig-policy-save-btn" class="primary" type="button">Save TPS</button>
-            </div>
-          </div>
-          <div class="policy-control-group">
-            <div class="policy-control-title">Concurrency</div>
-            <label>Window<input id="pig-window-concurrency" type="number" min="1" max="1000000" step="1" inputmode="numeric" placeholder="-"></label>
-            <label>Running limit<input id="pig-running-limit" type="number" min="0" max="1000000" step="1" inputmode="numeric" placeholder="0"></label>
-            <div class="pig-policy-actions">
-              <button id="pig-concurrency-refresh-btn" type="button">Load concurrency</button>
-              <button id="pig-concurrency-save-btn" class="primary" type="button">Save concurrency</button>
-            </div>
-          </div>
-          <div class="policy-fact">
-            <span>Revision</span>
-            <strong id="pig-policy-revision" class="mono">-</strong>
-          </div>
-          <div class="policy-fact">
-            <span>Source</span>
-            <strong id="pig-policy-source" class="mono">-</strong>
-          </div>
-          <div class="policy-fact">
-            <span>Mode</span>
-            <strong id="pig-policy-mode" class="mono">-</strong>
-          </div>
-          <div class="policy-fact">
-            <span>Poll</span>
-            <strong id="pig-policy-poll" class="mono">-</strong>
-          </div>
-          <div class="policy-fact">
-            <span>Max age</span>
-            <strong id="pig-policy-age" class="mono">-</strong>
-          </div>
-          <div class="policy-fact">
-            <span>Run limit source</span>
-            <strong id="pig-running-limit-source" class="mono">-</strong>
-          </div>
-        </div>
-        <div id="pig-policy-message" class="subline mono"></div>
-      </div>
-      </section>
-
-      <section class="panel layout-raw">
-      <div class="panel-title">Raw upstream config</div>
-      <textarea id="raw-json" spellcheck="false"></textarea>
-      <div class="raw-actions">
-        <button id="save-raw-btn" class="primary" type="button">Replace upstreams</button>
+        <span>Operation log</span>
+        <button id="clear-log-btn" type="button">Clear</button>
       </div>
       <pre id="log"></pre>
-      </section>
-    </div>
-  </aside>
+    </section>
+  </main>
 
-  <script src="/vendor/force-graph/force-graph.min.js"></script>
   <script src="/assets/app.js"></script>
 </body>
 </html>

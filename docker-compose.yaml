@@ -1,7 +1,7 @@
 services:
-  router-admin:
+  phala-node-admin:
     build: .
-    container_name: router-admin
+    container_name: phala-node-admin
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -9,6 +9,3 @@ services:
       - .env
     environment:
       PORT: "8080"
-      ROUTERS_FILE: /app/config/routers.json
-    volumes:
-      - ./config/routers.json:/app/config/routers.json:ro
