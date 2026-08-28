@@ -1010,15 +1010,6 @@ const server = http.createServer(async (req, res) => {
       await proxyPigPolicy(req, res, url);
       return;
     }
-    if (req.method === "GET" && url.pathname === "/api/gateway-preview") {
-      sendJSON(res, 200, await gatewayPreviewSummary());
-      return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/sync") {
-      sendJSON(res, 200, await propagateAll());
-      return;
-    }
-
     sendJSON(res, 404, { error: "not found" });
   } catch (err) {
     sendError(res, err);

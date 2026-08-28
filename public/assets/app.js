@@ -497,12 +497,6 @@ async function bulkSetActive(active) {
   await refreshPig(true);
 }
 
-async function syncGateway() {
-  if (!confirmWrite("Sync Redpill gateway/control/web cache now?")) return;
-  const data = await api("/api/sync", { method: "POST", body: "{}" });
-  log(data, "ok");
-}
-
 function parsePolicyInteger(value, label, min, max) {
   const raw = String(value ?? "").trim();
   if (!raw) throw new Error(`${label} must be an integer in [${min}, ${max}]`);
@@ -584,7 +578,6 @@ $("model-search").addEventListener("input", () => {
 $("model-active-filter").addEventListener("change", () => refreshRedpill(false));
 $("refresh-btn").addEventListener("click", () => refreshRedpill(true));
 $("pig-refresh-btn").addEventListener("click", () => refreshPig(true));
-$("sync-btn").addEventListener("click", () => syncGateway().catch((err) => log(err.message, "err")));
 $("select-active-btn").addEventListener("click", () => selectBy((deployment) => deployment.active));
 $("select-inactive-btn").addEventListener("click", () => selectBy((deployment) => !deployment.active));
 $("clear-selection-btn").addEventListener("click", () => selectBy(() => false));

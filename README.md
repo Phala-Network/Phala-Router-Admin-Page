@@ -34,7 +34,8 @@ small proxy to `/admin/v1/predictive-policy` for:
 - Redpill admin API key is used only by the server process
 - PIG bearer token is used only by the server process
 - No Redpill or PIG secrets are sent to the browser
-- Gateway preview responses are summarized before being returned to the browser
+- Gateway/control/web cache propagation is internal to write operations and is
+  not exposed as a manual node-management surface in the browser
 
 ## Request Model
 
@@ -105,8 +106,6 @@ All endpoints require Basic Auth.
 - `GET /api/pig/snapshot?model_id=<id>`
 - `GET /api/pig-policy?model_id=<id>&deployment_id=<id>`
 - `PATCH /api/pig-policy?model_id=<id>&deployment_id=<id>`
-- `GET /api/gateway-preview`
-- `POST /api/sync`
 
 ## Operational Notes
 
@@ -115,7 +114,10 @@ All write actions in the browser show a confirmation dialog before execution.
 For Redpill listing changes, select a model, then use a row `Up`/`Down` button
 or select existing rows and run `Up selected` or `Down selected`. The server
 verifies that every requested deployment belongs to the selected model and is a
-Phala deployment before sending Redpill write requests.
+Phala deployment before sending Redpill write requests. Successful writes can
+automatically propagate Redpill gateway, control-plane, and web caches according
+to `REDPILL_SYNC_AFTER_WRITE`; there is no separate manual sync or node-add
+workflow in this UI.
 
 For PIG policy changes, select a deployment with `PIG`, load the latest policy,
 edit the three supported integers, then save. The server uses the policy
