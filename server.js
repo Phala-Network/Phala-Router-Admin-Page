@@ -15,6 +15,7 @@ const redpillWebURL = normalizedBaseURL(process.env.REDPILL_WEB_URL || "");
 const redpillWebRevalidateToken = process.env.REDPILL_WEB_REVALIDATE_TOKEN || "";
 const requestTimeoutMs = Number(process.env.REDPILL_REQUEST_TIMEOUT_MS || "15000");
 const pigRequestTimeoutMs = Number(process.env.PIG_REQUEST_TIMEOUT_MS || "2500");
+const pigPolicyTimeoutMs = Number(process.env.PIG_POLICY_TIMEOUT_MS || "8000");
 const bodyLimitBytes = Number(process.env.ADMIN_BODY_LIMIT_BYTES || String(1024 * 1024));
 const syncAfterWriteDefault = process.env.REDPILL_SYNC_AFTER_WRITE !== "false";
 const modelCacheTtlMs = Number(process.env.REDPILL_MODEL_CACHE_TTL_MS || "300000");
@@ -812,6 +813,22 @@ async function fetchPigMetrics(baseURL, force = false) {
   }
   if (!pigAdminToken) return metricsUnavailable("PIG_ADMIN_TOKEN is not configured");
   try {
+    const readGovernor = async () => {
+      const policy = await readPigPolicyFromNode(baseURL);
+      if (policy.reference_semantics !== "soft_target" || !/^[a-f0-9]{32}$/.test(policy.epoch || "") ||
+          !Number.isSafeInteger(policy.active_decode_sequences) || policy.active_decode_sequences < 0) {
+        throw new HTTPError(502, "No supported Governor runtime snapshot");
+      }
+      const metrics = {
+        ok: true, status: "unknown", source: "governor", running: policy.active_decode_sequences,
+        running_semantics: "active_decode_sequences", user_tps: policy.average_tps,
+        effective_limit: null, waiting: null, policy
+      };
+      const at = Date.now();
+      pigMetricsCache.set(base, { metrics, at });
+      return decoratePigMetrics(metrics, "fresh", at);
+    };
+    if (cached?.metrics?.source === "governor") return await readGovernor();
     const response = await fetchWithTimeout(base + pigMetricsPath, {
       headers: {
         Authorization: `Bearer ${pigAdminToken}`,
@@ -820,8 +837,10 @@ async function fetchPigMetrics(baseURL, force = false) {
       timeoutMs: pigRequestTimeoutMs
     });
     const text = await response.text();
+    if (response.status === 404) return await readGovernor();
     if (!response.ok) return stalePigMetrics(base, `HTTP ${response.status}: ${compactUpstreamError(text)}`);
     const parsed = parsePigMetrics(text);
+    if (parsed.running == null) return await readGovernor();
     const sampledAt = Date.now();
     pigMetricsCache.set(base, { metrics: parsed, at: sampledAt });
     return decoratePigMetrics(parsed, "fresh", sampledAt);
@@ -881,7 +900,7 @@ function summarizePigNodes(nodes) {
   const statuses = active.map((node) => node.pig?.status || "error");
   const worst = statuses.includes("red") || statuses.includes("error")
     ? "red"
-    : statuses.includes("yellow") ? "yellow" : active.length > 0 ? "green" : "unknown";
+    : statuses.includes("yellow") ? "yellow" : statuses.includes("unknown") ? "unknown" : active.length > 0 ? "green" : "unknown";
   const limitNodes = active.filter((node) => Number.isFinite(Number(node.pig?.effective_limit)) && Number(node.pig.effective_limit) > 0);
   return {
     status: worst,
@@ -904,6 +923,7 @@ function requirePigToken() {
 }
 
 function normalizeTPSReference(value) {
+  if (typeof value !== "number" && typeof value !== "string") throw new HTTPError(400, "TPS reference must be numeric");
   if (typeof value === "string" && value.trim() === "") {
     throw new HTTPError(400, "TPS reference must be an integer in [0, 1000000]");
   }
@@ -916,6 +936,7 @@ function normalizeTPSReference(value) {
 
 function normalizeOptionalInteger(value, label, min, max) {
   if (value === undefined) return undefined;
+  if (typeof value !== "number" && typeof value !== "string") throw new HTTPError(400, `${label} must be numeric`);
   if (typeof value === "string" && value.trim() === "") {
     throw new HTTPError(400, `${label} must be an integer in [${min}, ${max}]`);
   }
@@ -927,6 +948,9 @@ function normalizeOptionalInteger(value, label, min, max) {
 }
 
 function normalizePigPolicyPatch(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new HTTPError(400, "Policy must be an object");
+  const allowed = new Set(["tps_reference", "window_concurrency", "running_limit", "expected_revision", "expected_epoch"]);
+  if (Object.keys(input).some((key) => !allowed.has(key))) throw new HTTPError(400, "Unknown policy field");
   const payload = { ...input };
   const hasTPS = Object.hasOwn(input, "tps_reference");
   const hasWindowConcurrency = Object.hasOwn(input, "window_concurrency");
@@ -940,7 +964,13 @@ function normalizePigPolicyPatch(input) {
   }
   if (hasRunningLimit) payload.running_limit = normalizeOptionalInteger(input.running_limit, "Running limit", 0, 1000000);
   if (Object.hasOwn(input, "expected_revision")) {
-    payload.expected_revision = normalizeOptionalInteger(input.expected_revision, "Expected revision", 1, 1000000000);
+    payload.expected_revision = normalizeOptionalInteger(input.expected_revision, "Expected revision", 1, Number.MAX_SAFE_INTEGER);
+  }
+  if (Object.hasOwn(input, "expected_epoch")) {
+    if (typeof input.expected_epoch !== "string" || !/^[a-f0-9]{32}$/.test(input.expected_epoch)) throw new HTTPError(400, "Invalid Governor epoch");
+    if (!Object.hasOwn(input, "expected_revision") || !hasTPS || hasWindowConcurrency || hasRunningLimit) {
+      throw new HTTPError(400, "Governor requires epoch, revision and TPS only");
+    }
   }
   return payload;
 }
@@ -972,7 +1002,7 @@ async function pigPolicyRequest(baseURL, method, payload) {
     method,
     headers,
     body,
-    timeoutMs: pigRequestTimeoutMs
+    timeoutMs: pigPolicyTimeoutMs
   });
   return {
     status: upstream.status,
@@ -999,6 +1029,9 @@ async function patchPigPolicyDirect(baseURL, patch) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const policy = await readPigPolicyFromNode(baseURL);
     const revision = Number(policy.revision);
+    if (policy.reference_semantics === "soft_target" || policy.epoch) {
+      throw new HTTPError(409, "Load Governor policy first and submit expected_epoch and expected_revision");
+    }
     latestResponse = await pigPolicyRequest(baseURL, "PATCH", { ...patch, expected_revision: revision });
     if (latestResponse.status !== 409) return latestResponse;
   }

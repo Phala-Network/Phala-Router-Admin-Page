@@ -234,6 +234,53 @@ function simplePostServer(handler) {
   });
 }
 
+test("Governor forwards epoch CAS and never retries conflicts or writes without a snapshot", async (t) => {
+  const epoch = "a".repeat(32);
+  let revision = 1;
+  let patches = 0;
+  const governor = http.createServer(async (req, res) => {
+    assert.equal(req.headers.authorization, "Bearer fixture-pig-token");
+    if (req.url === "/pig/metrics") return json(res, { error: "not found" }, 404);
+    if (req.method === "PATCH") {
+      patches++;
+      const body = JSON.parse(await readBody(req));
+      assert.deepEqual(Object.keys(body).sort(), ["expected_epoch", "expected_revision", "tps_reference"]);
+      if (body.expected_epoch !== epoch || body.expected_revision !== revision) {
+        return json(res, { error: "policy_conflict_or_invalid" }, 409);
+      }
+      revision++;
+    }
+    json(res, { epoch, revision, reference_semantics: "soft_target", mutable: { tps_reference: 35 }, average_tps: 40, active_decode_sequences: 3 });
+  });
+  const governorPort = await listen(governor);
+  t.after(() => close(governor));
+  const redpill = redpillServer(makeFixtureState(`http://127.0.0.1:${governorPort}`));
+  const redpillPort = await listen(redpill);
+  t.after(() => close(redpill));
+  const { baseURL, auth } = await spawnAdmin(t, {
+    REDPILL_API_URL: `http://127.0.0.1:${redpillPort}`,
+    REDPILL_API_KEY: "fixture-redpill-key", PIG_ADMIN_TOKEN: "fixture-pig-token"
+  });
+  const url = `${baseURL}/api/pig-policy?model_id=89&deployment_id=153`;
+  const headers = { Authorization: auth, "Content-Type": "application/json" };
+  const snapshot = await (await fetch(`${baseURL}/api/pig/snapshot?model_id=89`, { headers })).json();
+  assert.equal(snapshot.summary.running, 3);
+  assert.equal(snapshot.summary.status, "unknown");
+  assert.equal(snapshot.summary.limit, null);
+  assert.equal(snapshot.nodes.find((node) => node.deployment_id === 153).pig.source, "governor");
+  assert.equal((await (await fetch(url, { headers })).json()).epoch, epoch);
+  const patch = (body) => fetch(url, { method: "PATCH", headers, body: JSON.stringify(body) });
+  assert.equal((await patch({ tps_reference: 40 })).status, 409);
+  assert.equal(patches, 0);
+  assert.equal((await patch({ tps_reference: 40, expected_epoch: epoch, expected_revision: 1 })).status, 200);
+  assert.equal((await patch({ tps_reference: 45, expected_epoch: epoch, expected_revision: 1 })).status, 409);
+  assert.equal(patches, 2);
+  assert.equal((await patch({ tps_reference: 45, expected_epoch: "b".repeat(32), expected_revision: 2 })).status, 409);
+  assert.equal(patches, 3);
+  assert.equal((await patch({ tps_reference: 45, expected_epoch: epoch, expected_revision: 2, running_limit: 64 })).status, 400);
+  assert.equal(patches, 3);
+});
+
 async function spawnAdmin(t, env) {
   const adminPort = await freePort();
   const username = "tester";

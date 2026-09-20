@@ -204,7 +204,7 @@ function pigSummary() {
     ? "red"
     : activeNodes.some((node) => node.pig?.status === "yellow")
       ? "yellow"
-      : activeNodes.length > 0 ? "green" : "unknown";
+      : activeNodes.some((node) => node.pig?.status === "unknown") ? "unknown" : activeNodes.length > 0 ? "green" : "unknown";
   const sum = (key) => activeNodes.reduce((total, node) => {
     const value = Number(node.pig?.[key]);
     return Number.isFinite(value) ? total + value : total;
@@ -611,9 +611,13 @@ function renderPigPanel() {
   const node = selectedPigNode();
   $("pig-policy-target").textContent = selectedDeployment ? shortHost(deploymentBaseURL(selectedDeployment)) : "select a Phala node";
   $("pig-policy-refresh-btn").disabled = !selectedDeployment;
-  $("pig-policy-save-btn").disabled = !selectedDeployment;
+  $("pig-policy-save-btn").disabled = !selectedDeployment || !latestPolicy || String(latestPolicy.deployment_id) !== String(selectedDeployment.id);
   if (!selectedDeployment) return;
   if (!latestPolicy || String(latestPolicy.deployment_id) !== String(selectedDeployment.id)) {
+    for (const id of ["pig-window-concurrency", "pig-running-limit"]) {
+      $(id).disabled = true;
+      $(id).closest("label").hidden = true;
+    }
     $("pig-tps-reference").value = "";
     $("pig-window-concurrency").value = "";
     $("pig-running-limit").value = "";
@@ -794,13 +798,20 @@ function loadPolicyIntoForm(policy) {
   latestPolicy = { ...policy, deployment_id: selectedDeployment.id };
   const mutable = policy.mutable || {};
   const effective = policy.effective || {};
+  const governor = policy.reference_semantics === "soft_target" && typeof policy.epoch === "string";
+  for (const id of ["pig-window-concurrency", "pig-running-limit"]) {
+    $(id).disabled = governor;
+    $(id).closest("label").hidden = governor;
+  }
   $("pig-tps-reference").value = mutable.tps_reference ?? "";
   $("pig-window-concurrency").value = mutable.window_concurrency ?? "";
   $("pig-running-limit").value = mutable.running_limit ?? "";
   $("pig-policy-revision").textContent = fmt(policy.revision);
-  $("pig-policy-source").textContent = policy.source || "-";
-  $("pig-policy-mode").textContent = effective.admission_mode || "-";
-  $("pig-policy-message").textContent = `loaded revision ${fmt(policy.revision)}; ${policy.persistence || "runtime"}`;
+  $("pig-policy-source").textContent = governor ? "Governor" : policy.source || "-";
+  $("pig-policy-mode").textContent = governor ? "soft TPS target" : effective.admission_mode || "-";
+  $("pig-policy-message").textContent = governor
+    ? `epoch ${policy.epoch} | average TPS ${policy.average_tps == null ? "-" : fmt(policy.average_tps)} | decode sequences ${fmt(policy.active_decode_sequences)}`
+    : `loaded revision ${fmt(policy.revision)}; ${policy.persistence || "runtime"}`;
   $("pig-policy-message").className = "subline mono ok";
 }
 
@@ -808,7 +819,9 @@ async function readPigPolicy() {
   if (!selectedModel || !selectedDeployment) throw new Error("select a Phala deployment first");
   $("pig-policy-message").textContent = "reading policy...";
   $("pig-policy-message").className = "subline mono";
-  const policy = await api(`/api/pig-policy?model_id=${encodeURIComponent(selectedModel.id)}&deployment_id=${encodeURIComponent(selectedDeployment.id)}`);
+  const deploymentID = selectedDeployment.id;
+  const policy = await api(`/api/pig-policy?model_id=${encodeURIComponent(selectedModel.id)}&deployment_id=${encodeURIComponent(deploymentID)}`);
+  if (String(selectedDeployment?.id) !== String(deploymentID)) return policy;
   loadPolicyIntoForm(policy);
   renderPigPanel();
   return policy;
@@ -816,20 +829,40 @@ async function readPigPolicy() {
 
 async function savePigPolicy() {
   if (!selectedModel || !selectedDeployment) throw new Error("select a Phala deployment first");
+  if (!latestPolicy || String(latestPolicy.deployment_id) !== String(selectedDeployment.id)) throw new Error("Load policy before saving");
+  const governor = latestPolicy.reference_semantics === "soft_target" && typeof latestPolicy.epoch === "string";
   const payload = {
     tps_reference: parsePolicyInteger($("pig-tps-reference").value, "TPS reference", 0, 1000000),
-    window_concurrency: parsePolicyInteger($("pig-window-concurrency").value, "Window concurrency", 1, 1000000),
-    running_limit: parsePolicyInteger($("pig-running-limit").value, "Running limit", 0, 1000000)
+    window_concurrency: governor ? undefined : parsePolicyInteger($("pig-window-concurrency").value, "Window concurrency", 1, 1000000),
+    running_limit: governor ? undefined : parsePolicyInteger($("pig-running-limit").value, "Running limit", 0, 1000000)
   };
+  if (governor) {
+    delete payload.window_concurrency;
+    delete payload.running_limit;
+    payload.expected_epoch = latestPolicy.epoch;
+  }
   const revision = Number(latestPolicy?.revision);
   if (Number.isFinite(revision) && revision > 0) payload.expected_revision = revision;
   if (!confirmWrite(`Save PIG hot policy for #${selectedDeployment.id}?`, payload)) return;
+  const deploymentID = selectedDeployment.id;
   $("pig-policy-message").textContent = "saving policy...";
   $("pig-policy-message").className = "subline mono";
-  const policy = await api(`/api/pig-policy?model_id=${encodeURIComponent(selectedModel.id)}&deployment_id=${encodeURIComponent(selectedDeployment.id)}`, {
+  let policy;
+  try {
+    policy = await api(`/api/pig-policy?model_id=${encodeURIComponent(selectedModel.id)}&deployment_id=${encodeURIComponent(selectedDeployment.id)}`, {
     method: "PATCH",
     body: JSON.stringify(payload)
-  });
+    });
+  } catch (err) {
+    if (String(selectedDeployment?.id) === String(deploymentID)) {
+      latestPolicy = null;
+      renderPigPanel();
+      $("pig-policy-message").textContent = `Save not confirmed: ${err.message}. Load policy before retrying.`;
+      $("pig-policy-message").className = "subline mono err";
+    }
+    throw err;
+  }
+  if (String(selectedDeployment?.id) !== String(deploymentID)) return;
   loadPolicyIntoForm(policy);
   log(`PIG policy saved for ${shortHost(deploymentBaseURL(selectedDeployment))} revision ${fmt(policy.revision)}`, "ok");
   await refreshPig(true);

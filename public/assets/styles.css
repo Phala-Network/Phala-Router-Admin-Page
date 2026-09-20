@@ -719,6 +719,14 @@ td:nth-child(9) { width: 146px; }
   padding: 0;
 }
 
+.policy-grid label[hidden] {
+  display: none;
+}
+
+#pig-policy-message {
+  overflow-wrap: anywhere;
+}
+
 .policy-meta {
   grid-column: 1 / -1;
   display: grid;

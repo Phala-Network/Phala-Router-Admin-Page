@@ -26,6 +26,22 @@ small proxy to `/admin/v1/predictive-policy` for:
 - `window_concurrency`
 - `running_limit`
 
+The same policy endpoint also supports Phala Inference Governor. The page
+recognizes its `epoch` and `reference_semantics: soft_target` response, hides
+the unsupported concurrency controls, and displays average TPS and active decode
+sequences. Governor updates send only integer `tps_reference`, `expected_epoch`
+and `expected_revision` from the loaded snapshot. Conflicts require loading
+again; Governor writes are never automatically retried. An epoch change after
+a scheduler restart therefore cannot silently overwrite the new policy.
+Governor TPS is a soft average target, not an individual request throughput floor.
+When legacy metrics return 404 or contain no running sample, the server detects
+Governor through the authenticated policy endpoint. Subsequent runtime refreshes
+use its snapshot with the same short cache and stale-data handling. The running
+series represents active decode sequences on Governor, not all queued/prefill
+requests. Missing queue/limit data stays unknown; Governor is not assigned a
+synthetic green/yellow/red health state. Saving failures invalidate the form's
+snapshot and require Load policy before retrying.
+
 ## Runtime
 
 - Node.js 22
@@ -87,6 +103,8 @@ Optional environment variables:
 - `REDPILL_PHALA_HOST_SUFFIXES`: endpoint suffixes that count as Phala, default
   `phala.com`.
 - `PIG_REQUEST_TIMEOUT_MS`: PIG request timeout, default `2500`.
+- `PIG_POLICY_TIMEOUT_MS`: policy request timeout, default `8000`, allowing
+  Governor's five-second scheduler control deadline to return a response.
 - `PIG_METRICS_PATH`: PIG metrics path, default `/pig/metrics`.
 - `PIG_POLICY_PATH`: PIG hot policy path, default
   `/admin/v1/predictive-policy`.
