@@ -281,6 +281,79 @@ test("Governor forwards epoch CAS and never retries conflicts or writes without 
   assert.equal(patches, 3);
 });
 
+test("refreshes PIG metrics after a legacy Governor cache entry", async (t) => {
+  const state = { phase: "legacy", requests: [] };
+  const upstream = http.createServer(async (req, res) => {
+    state.requests.push({ method: req.method, url: req.url });
+    assert.equal(req.headers.authorization, "Bearer fixture-pig-token");
+    if (req.method === "GET" && req.url === "/pig/metrics") {
+      if (state.phase === "legacy") {
+        json(res, { error: "not found" }, 404);
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "text/plain; version=0.0.4" });
+      res.end([
+        'pig_version_info{version="0.12.29"} 1',
+        "pig_dynamic_observed_running 9",
+        "pig_dynamic_observed_waiting 0",
+        "pig_dynamic_global_limit 16",
+        ""
+      ].join("\n"));
+      return;
+    }
+    if (req.method === "GET" && req.url === "/admin/v1/predictive-policy") {
+      if (state.phase === "legacy") {
+        json(res, {
+          epoch: "a".repeat(32),
+          revision: 1,
+          reference_semantics: "soft_target",
+          average_tps: 40,
+          active_decode_sequences: 3,
+          mutable: { tps_reference: 35 }
+        });
+        return;
+      }
+      json(res, {
+        schema_version: "pig.predictive-policy.v1",
+        revision: 2,
+        source: "runtime_api",
+        mutable: { tps_reference: 50, window_concurrency: 32, running_limit: 43 },
+        effective: { admission_mode: "enforce", running_limit_source: "admin" }
+      });
+      return;
+    }
+    json(res, { error: "not found" }, 404);
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+
+  const stateFixture = makeFixtureState(`http://127.0.0.1:${upstreamPort}`);
+  const redpill = redpillServer(stateFixture);
+  const redpillPort = await listen(redpill);
+  t.after(() => close(redpill));
+
+  const { baseURL, auth } = await spawnAdmin(t, {
+    REDPILL_API_URL: `http://127.0.0.1:${redpillPort}`,
+    REDPILL_API_KEY: "fixture-redpill-key",
+    PIG_ADMIN_TOKEN: "fixture-pig-token"
+  });
+  const headers = { Authorization: auth };
+
+  const first = await (await fetch(`${baseURL}/api/pig/snapshot?model_id=89&force=true`, { headers })).json();
+  assert.equal(first.nodes.find((node) => node.deployment_id === 153).pig.source, "governor");
+  assert.equal(first.summary.running, 3);
+
+  state.phase = "metrics";
+  const second = await (await fetch(`${baseURL}/api/pig/snapshot?model_id=89&force=true`, { headers })).json();
+  const pig = second.nodes.find((node) => node.deployment_id === 153).pig;
+  assert.equal(pig.ok, true);
+  assert.equal(pig.source, null);
+  assert.equal(pig.running, 9);
+  assert.equal(pig.effective_limit, 16);
+  assert.equal(second.summary.running, 9);
+  assert.equal(state.requests.filter((request) => request.url === "/pig/metrics").length, 2);
+});
+
 async function spawnAdmin(t, env) {
   const adminPort = await freePort();
   const username = "tester";

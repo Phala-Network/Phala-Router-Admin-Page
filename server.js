@@ -828,7 +828,9 @@ async function fetchPigMetrics(baseURL, force = false) {
       pigMetricsCache.set(base, { metrics, at });
       return decoratePigMetrics(metrics, "fresh", at);
     };
-    if (cached?.metrics?.source === "governor") return await readGovernor();
+    // Always probe the configured metrics endpoint after the short cache expires.
+    // A node can be upgraded from the legacy Governor schema to PIG metrics while
+    // this process stays alive; the cached source must not pin it to the fallback.
     const response = await fetchWithTimeout(base + pigMetricsPath, {
       headers: {
         Authorization: `Bearer ${pigAdminToken}`,
