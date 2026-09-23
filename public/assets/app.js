@@ -319,6 +319,7 @@ function renderDeployments() {
           <div class="node-card-title">
             <div class="node-title">${escapeHTML(nodeLabel(deploymentBaseURL(deployment)))}</div>
           </div>
+          <span class="deployment-id" title="deployment id">#${escapeHTML(deployment.id)}</span>
           <span class="pill ${escapeAttr(deployment.active ? "green" : "disabled")}">${deployment.active ? "up" : "down"}</span>
         </div>
         <div class="node-running">

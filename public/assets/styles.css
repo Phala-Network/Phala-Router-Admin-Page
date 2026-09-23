@@ -449,7 +449,7 @@ button.danger {
 
 .node-card-head {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) max-content;
+  grid-template-columns: 22px minmax(0, 1fr) max-content max-content;
   align-items: center;
   gap: 9px;
 }
@@ -463,6 +463,12 @@ button.danger {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.deployment-id {
+  color: var(--muted);
+  font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: nowrap;
 }
 
 .node-running {
