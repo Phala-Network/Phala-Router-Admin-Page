@@ -150,3 +150,21 @@ npm run check
 npm test
 docker compose config
 ```
+
+## Per-node credentials
+
+`PIG_NODE_TOKENS_FILE` optionally names a protected JSON file mapping exact HTTPS
+origins to their node TOKEN. Both metrics and policy requests use this mapping.
+An origin includes a nondefault port when applicable; paths and trailing slashes
+are not allowed in map keys. Unlisted origins use the existing `PIG_ADMIN_TOKEN`
+(or its existing environment fallback).
+
+Mount the file read-only into the container and set its path in `.env`. Keep its
+parent directory private and the file mode `0600`, owned by the runtime user.
+Never commit the file or put real TOKEN values in Compose or command arguments.
+A missing, malformed, or broadly readable configured file fails closed without
+fallback. Values must be nonempty printable ASCII without whitespace.
+
+The file is reread for upstream requests, so atomic replacement takes effect
+without restarting the app; already cached metrics retain their configured TTL.
+For a fresh verification, use `GET /api/pig/snapshot?model_id=<id>&force=true`.
