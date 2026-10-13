@@ -28,6 +28,39 @@ const pigMetricsPath = process.env.PIG_METRICS_PATH || "/pig/metrics";
 const pigPolicyPath = process.env.PIG_POLICY_PATH || "/admin/v1/predictive-policy";
 const pigPolicyBodyLimit = Number(process.env.PIG_POLICY_BODY_LIMIT_BYTES || "4096");
 const pigAdminToken = process.env.PIG_ADMIN_TOKEN || process.env.GATEWAY_ADMIN_TOKEN || process.env.PHALA_NODE_BEARER_TOKEN || "";
+const pigNodeTokensFile = process.env.PIG_NODE_TOKENS_FILE || "";
+const pigRequiredTokenOrigins = new Set(splitList(process.env.PIG_REQUIRED_TOKEN_ORIGINS || ""));
+for (const origin of pigRequiredTokenOrigins) {
+  const url = new URL(origin);
+  if (url.origin !== origin || url.protocol !== "https:") throw new Error("Invalid required PIG token origin");
+}
+if (pigRequiredTokenOrigins.size && !pigNodeTokensFile) throw new Error("Required PIG origins need a credential file");
+
+function pigTokenForNode(baseURL) {
+  const endpoint = new URL(baseURL);
+  if (endpoint.username || endpoint.password) throw new HTTPError(500, "Invalid PIG endpoint");
+  if (!pigNodeTokensFile) return pigAdminToken;
+  let mapping;
+  try {
+    const stat = fs.statSync(pigNodeTokensFile);
+    if (!stat.isFile() || stat.size > 65536 || (stat.mode & 0o077) !== 0) throw new Error();
+    mapping = JSON.parse(fs.readFileSync(pigNodeTokensFile, "utf8"));
+    if (!mapping || typeof mapping !== "object" || Array.isArray(mapping)) throw new Error();
+    for (const [origin, token] of Object.entries(mapping)) {
+      const url = new URL(origin);
+      if (url.origin !== origin || url.protocol !== "https:" ||
+          typeof token !== "string" || !/^[\x21-\x7e]+$/.test(token)) throw new Error();
+    }
+    for (const origin of pigRequiredTokenOrigins) {
+      if (!Object.prototype.hasOwnProperty.call(mapping, origin)) throw new Error();
+    }
+  } catch (_) {
+    throw new HTTPError(500, "PIG node credential file is unavailable or invalid");
+  }
+  const origin = endpoint.origin;
+  return Object.prototype.hasOwnProperty.call(mapping, origin) ? mapping[origin] : pigAdminToken;
+}
+
 const phalaProviders = splitList(process.env.REDPILL_PHALA_PROVIDERS || "phala").map((value) => value.toLowerCase());
 const phalaHostSuffixes = splitList(process.env.REDPILL_PHALA_HOST_SUFFIXES || "phala.com").map((value) => value.toLowerCase());
 const staticRoot = path.join(__dirname, "public");
@@ -811,8 +844,9 @@ async function fetchPigMetrics(baseURL, force = false) {
   if (!force && cacheFresh(cached, pigMetricsCacheTtlMs)) {
     return decoratePigMetrics(cached.metrics, "fresh", cached.at);
   }
-  if (!pigAdminToken) return metricsUnavailable("PIG_ADMIN_TOKEN is not configured");
   try {
+    const nodeToken = pigTokenForNode(baseURL);
+    if (!nodeToken) return metricsUnavailable("PIG node credential is not configured");
     const readGovernor = async () => {
       const policy = await readPigPolicyFromNode(baseURL);
       if (policy.reference_semantics !== "soft_target" || !/^[a-f0-9]{32}$/.test(policy.epoch || "") ||
@@ -833,10 +867,11 @@ async function fetchPigMetrics(baseURL, force = false) {
     // this process stays alive; the cached source must not pin it to the fallback.
     const response = await fetchWithTimeout(base + pigMetricsPath, {
       headers: {
-        Authorization: `Bearer ${pigAdminToken}`,
+        Authorization: `Bearer ${nodeToken}`,
         Accept: "text/plain"
       },
-      timeoutMs: pigRequestTimeoutMs
+      timeoutMs: pigRequestTimeoutMs,
+      redirect: "error"
     });
     const text = await response.text();
     if (response.status === 404) return await readGovernor();
@@ -920,8 +955,10 @@ function summarizePigNodes(nodes) {
   };
 }
 
-function requirePigToken() {
-  if (!pigAdminToken) throw new HTTPError(500, "PIG_ADMIN_TOKEN is not configured");
+function requirePigToken(baseURL) {
+  const nodeToken = pigTokenForNode(baseURL);
+  if (!nodeToken) throw new HTTPError(500, "PIG node credential is not configured");
+  return nodeToken;
 }
 
 function normalizeTPSReference(value) {
@@ -951,26 +988,28 @@ function normalizeOptionalInteger(value, label, min, max) {
 
 function normalizePigPolicyPatch(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new HTTPError(400, "Policy must be an object");
-  const allowed = new Set(["tps_reference", "window_concurrency", "running_limit", "expected_revision", "expected_epoch"]);
+  const allowed = new Set(["tps_reference", "window_concurrency", "running_limit", "waiting_allowance", "expected_revision", "expected_epoch"]);
   if (Object.keys(input).some((key) => !allowed.has(key))) throw new HTTPError(400, "Unknown policy field");
   const payload = { ...input };
   const hasTPS = Object.hasOwn(input, "tps_reference");
   const hasWindowConcurrency = Object.hasOwn(input, "window_concurrency");
   const hasRunningLimit = Object.hasOwn(input, "running_limit");
-  if (!hasTPS && !hasWindowConcurrency && !hasRunningLimit) {
-    throw new HTTPError(400, "PIG policy patch must include tps_reference, window_concurrency, or running_limit");
+  const hasWaitingAllowance = Object.hasOwn(input, "waiting_allowance");
+  if (!hasTPS && !hasWindowConcurrency && !hasRunningLimit && !hasWaitingAllowance) {
+    throw new HTTPError(400, "PIG policy patch must include tps_reference, window_concurrency, running_limit, or waiting_allowance");
   }
   if (hasTPS) payload.tps_reference = normalizeTPSReference(input.tps_reference);
   if (hasWindowConcurrency) {
     payload.window_concurrency = normalizeOptionalInteger(input.window_concurrency, "Window concurrency", 1, 1000000);
   }
   if (hasRunningLimit) payload.running_limit = normalizeOptionalInteger(input.running_limit, "Running limit", 0, 1000000);
+  if (hasWaitingAllowance) payload.waiting_allowance = normalizeOptionalInteger(input.waiting_allowance, "Waiting allowance", 0, 1048576);
   if (Object.hasOwn(input, "expected_revision")) {
     payload.expected_revision = normalizeOptionalInteger(input.expected_revision, "Expected revision", 1, Number.MAX_SAFE_INTEGER);
   }
   if (Object.hasOwn(input, "expected_epoch")) {
     if (typeof input.expected_epoch !== "string" || !/^[a-f0-9]{32}$/.test(input.expected_epoch)) throw new HTTPError(400, "Invalid Governor epoch");
-    if (!Object.hasOwn(input, "expected_revision") || !hasTPS || hasWindowConcurrency || hasRunningLimit) {
+    if (!Object.hasOwn(input, "expected_revision") || !hasTPS || hasWindowConcurrency || hasRunningLimit || hasWaitingAllowance) {
       throw new HTTPError(400, "Governor requires epoch, revision and TPS only");
     }
   }
@@ -990,9 +1029,9 @@ function parsePolicyJSON(response) {
 }
 
 async function pigPolicyRequest(baseURL, method, payload) {
-  requirePigToken();
+  const nodeToken = requirePigToken(baseURL);
   const headers = {
-    Authorization: `Bearer ${pigAdminToken}`,
+    Authorization: `Bearer ${nodeToken}`,
     Accept: "application/json"
   };
   let body;
@@ -1004,7 +1043,8 @@ async function pigPolicyRequest(baseURL, method, payload) {
     method,
     headers,
     body,
-    timeoutMs: pigPolicyTimeoutMs
+    timeoutMs: pigPolicyTimeoutMs,
+    redirect: "error"
   });
   return {
     status: upstream.status,
