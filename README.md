@@ -159,7 +159,8 @@ An origin includes a nondefault port when applicable; paths and trailing slashes
 are not allowed in map keys. Unlisted origins use the existing `PIG_ADMIN_TOKEN`
 (or its existing environment fallback).
 
-Mount the file read-only into the container and set its path in `.env`. Keep its
+Mount a dedicated credential directory read-only into the container and set the
+file path in `.env`. Keep its
 parent directory private and the file mode `0600`, owned by the runtime user.
 Never commit the file or put real TOKEN values in Compose or command arguments.
 A missing, malformed, or broadly readable configured file fails closed without
@@ -168,3 +169,15 @@ fallback. Values must be nonempty printable ASCII without whitespace.
 The file is reread for upstream requests, so atomic replacement takes effect
 without restarting the app; already cached metrics retain their configured TTL.
 For a fresh verification, use `GET /api/pig/snapshot?model_id=<id>&force=true`.
+
+Set `PIG_REQUIRED_TOKEN_ORIGINS` to a comma-separated list of exact HTTPS origins
+that must have individual credentials. A missing entry then fails closed instead
+of using the global token. Existing valid entries outside this required list are
+preserved and continue to work. Configure the required list together with the
+credential file, and retain all existing entries when rotating one origin.
+Atomically replace the file within its mounted directory; mounting only a file
+would pin the old inode across replacement. Authenticated metrics and policy
+requests refuse redirects.
+
+This application provides JSON snapshots for its UI. It is not a Prometheus
+exporter and does not manage external Prometheus or Grafana credentials.

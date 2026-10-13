@@ -29,13 +29,21 @@ const pigPolicyPath = process.env.PIG_POLICY_PATH || "/admin/v1/predictive-polic
 const pigPolicyBodyLimit = Number(process.env.PIG_POLICY_BODY_LIMIT_BYTES || "4096");
 const pigAdminToken = process.env.PIG_ADMIN_TOKEN || process.env.GATEWAY_ADMIN_TOKEN || process.env.PHALA_NODE_BEARER_TOKEN || "";
 const pigNodeTokensFile = process.env.PIG_NODE_TOKENS_FILE || "";
+const pigRequiredTokenOrigins = new Set(splitList(process.env.PIG_REQUIRED_TOKEN_ORIGINS || ""));
+for (const origin of pigRequiredTokenOrigins) {
+  const url = new URL(origin);
+  if (url.origin !== origin || url.protocol !== "https:") throw new Error("Invalid required PIG token origin");
+}
+if (pigRequiredTokenOrigins.size && !pigNodeTokensFile) throw new Error("Required PIG origins need a credential file");
 
 function pigTokenForNode(baseURL) {
+  const endpoint = new URL(baseURL);
+  if (endpoint.username || endpoint.password) throw new HTTPError(500, "Invalid PIG endpoint");
   if (!pigNodeTokensFile) return pigAdminToken;
   let mapping;
   try {
     const stat = fs.statSync(pigNodeTokensFile);
-    if (!stat.isFile() || (stat.mode & 0o077) !== 0) throw new Error();
+    if (!stat.isFile() || stat.size > 65536 || (stat.mode & 0o077) !== 0) throw new Error();
     mapping = JSON.parse(fs.readFileSync(pigNodeTokensFile, "utf8"));
     if (!mapping || typeof mapping !== "object" || Array.isArray(mapping)) throw new Error();
     for (const [origin, token] of Object.entries(mapping)) {
@@ -43,10 +51,13 @@ function pigTokenForNode(baseURL) {
       if (url.origin !== origin || url.protocol !== "https:" ||
           typeof token !== "string" || !/^[\x21-\x7e]+$/.test(token)) throw new Error();
     }
+    for (const origin of pigRequiredTokenOrigins) {
+      if (!Object.prototype.hasOwnProperty.call(mapping, origin)) throw new Error();
+    }
   } catch (_) {
     throw new HTTPError(500, "PIG node credential file is unavailable or invalid");
   }
-  const origin = new URL(baseURL).origin;
+  const origin = endpoint.origin;
   return Object.prototype.hasOwnProperty.call(mapping, origin) ? mapping[origin] : pigAdminToken;
 }
 
@@ -859,7 +870,8 @@ async function fetchPigMetrics(baseURL, force = false) {
         Authorization: `Bearer ${nodeToken}`,
         Accept: "text/plain"
       },
-      timeoutMs: pigRequestTimeoutMs
+      timeoutMs: pigRequestTimeoutMs,
+      redirect: "error"
     });
     const text = await response.text();
     if (response.status === 404) return await readGovernor();
@@ -1031,7 +1043,8 @@ async function pigPolicyRequest(baseURL, method, payload) {
     method,
     headers,
     body,
-    timeoutMs: pigPolicyTimeoutMs
+    timeoutMs: pigPolicyTimeoutMs,
+    redirect: "error"
   });
   return {
     status: upstream.status,
